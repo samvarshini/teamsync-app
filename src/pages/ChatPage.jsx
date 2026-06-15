@@ -66,6 +66,7 @@ export default function ChatPage() {
 
     const client = new Client({
       webSocketFactory: () => new SockJS('https://teamsync-app-6guk.onrender.com/ws'),
+      reconnectDelay: 5000,
       onConnect: () => {
         setConnected(true);
         client.subscribe(`/topic/team/${teamId}`, (message) => {
@@ -73,7 +74,12 @@ export default function ChatPage() {
           setMessages((prev) => [...prev, msg]);
         });
       },
-      onDisconnect: () => setConnected(false),
+      onDisconnect: () => {
+        setConnected(false);
+      },
+      onStompError: () => {
+        setConnected(false);
+      }
     });
 
     client.activate();
@@ -127,7 +133,7 @@ export default function ChatPage() {
             {selectedTeam ? `# ${selectedTeam.name}` : 'Select a team'}
           </h3>
           <span style={{ ...styles.status, color: connected ? '#10b981' : '#ef4444' }}>
-            {connected ? '🟢 Connected' : '🔴 Disconnected'}
+            {connected ? '🟢 Connected' : '🔴 Connecting...'}
           </span>
         </div>
 
@@ -155,7 +161,7 @@ export default function ChatPage() {
         <div style={styles.inputArea}>
           <input
             style={styles.input}
-            placeholder="Type a message... (Enter to send)"
+            placeholder={connected ? "Type a message... (Enter to send)" : "Connecting to chat..."}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={handleKeyPress}
