@@ -65,7 +65,7 @@ export default function ChatPage() {
     if (clientRef.current) clientRef.current.deactivate();
 
     const client = new Client({
-      webSocketFactory: () => new SockJS(`${process.env.REACT_APP_WS_URL || 'http://localhost:8080'}/ws`),
+      webSocketFactory: () => new SockJS('https://teamsync-app-6guk.onrender.com/ws'),
       onConnect: () => {
         setConnected(true);
         client.subscribe(`/topic/team/${teamId}`, (message) => {
