@@ -12,5 +12,10 @@ public class ChatMessage {
     private String audioDataUrl;
     private Integer audioDurationSeconds;
     private String mediaMimeType;
+    private String callId;
+    private String callStatus;
+    private String callMediaType;
+    private Long callInitiatorId;
+    private Integer callDurationSeconds;
     private String sentAt;
 }

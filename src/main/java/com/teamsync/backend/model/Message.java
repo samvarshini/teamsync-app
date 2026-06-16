@@ -34,6 +34,21 @@ public class Message {
     @Column(name = "media_mime_type")
     private String mediaMimeType;
 
+    @Column(name = "call_id")
+    private String callId;
+
+    @Column(name = "call_status")
+    private String callStatus;
+
+    @Column(name = "call_media_type")
+    private String callMediaType;
+
+    @Column(name = "call_initiator_id")
+    private Long callInitiatorId;
+
+    @Column(name = "call_duration_seconds")
+    private Integer callDurationSeconds;
+
     @Column(name = "sent_at")
     private LocalDateTime sentAt = LocalDateTime.now();
 }

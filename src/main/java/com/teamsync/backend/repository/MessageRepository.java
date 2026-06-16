@@ -6,4 +6,5 @@ import java.util.List;
 
 public interface MessageRepository extends JpaRepository<Message, Long> {
     List<Message> findByTeamIdOrderBySentAtAsc(Long teamId);
+    boolean existsByTeamIdAndCallIdAndCallStatus(Long teamId, String callId, String callStatus);
 }

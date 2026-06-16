@@ -15,4 +15,8 @@ public class CallSignal {
     private Boolean screenSharing;
     private Boolean controlRequested;
     private Boolean controlGranted;
+    private Long callInitiatorId;
+    private String callMediaType;
+    private String callStatus;
+    private Integer callDurationSeconds;
 }
