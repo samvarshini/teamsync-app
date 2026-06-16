@@ -1,36 +1,41 @@
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
-import { Doughnut, Bar } from 'react-chartjs-2';
-import {
-  Chart as ChartJS, ArcElement, Tooltip, Legend,
-  CategoryScale, LinearScale, BarElement, Title,
-} from 'chart.js';
+import { Doughnut } from 'react-chartjs-2';
+import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
+import { Client } from '@stomp/stompjs';
+import SockJS from 'sockjs-client';
 import API from '../services/api';
 
-ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, Title);
+ChartJS.register(ArcElement, Tooltip, Legend);
 
 export default function Dashboard() {
   const { user, logoutUser } = useAuth();
   const navigate = useNavigate();
-  const [stats, setStats] = useState(null);
+  const [teamStats, setTeamStats] = useState([]);
+  const [overallStats, setOverallStats] = useState(null);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [showNotifications, setShowNotifications] = useState(false);
   const notifRef = useRef(null);
+  const clientRef = useRef(null);
 
   useEffect(() => {
-    loadStats();
+    loadOverallStats();
+    loadTeamStats();
     loadNotifications();
+    connectNotifications();
     const interval = setInterval(loadUnreadCount, 10000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (clientRef.current) clientRef.current.deactivate();
+    };
   }, []);
 
   useEffect(() => {
     const handleClickOutside = (e) => {
-      if (notifRef.current && !notifRef.current.contains(e.target)) {
+      if (notifRef.current && !notifRef.current.contains(e.target))
         setShowNotifications(false);
-      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
@@ -38,11 +43,40 @@ export default function Dashboard() {
 
   const authHeader = { headers: { Authorization: `Bearer ${user.token}` } };
 
-  const loadStats = async () => {
+  const connectNotifications = () => {
+    const client = new Client({
+      webSocketFactory: () => new SockJS('https://teamsync-app-6guk.onrender.com/ws'),
+      reconnectDelay: 5000,
+      onConnect: () => {
+        client.subscribe(`/topic/notifications/${user.id}`, (message) => {
+          const notification = JSON.parse(message.body);
+          setNotifications(prev => [notification, ...prev]);
+          setUnreadCount(prev => prev + 1);
+        });
+      },
+    });
+    client.activate();
+    clientRef.current = client;
+  };
+
+  const loadOverallStats = async () => {
     try {
       const res = await API.get('/stats/dashboard', authHeader);
-      setStats(res.data);
+      setOverallStats(res.data);
     } catch (err) { console.error('Failed to load stats'); }
+  };
+
+  const loadTeamStats = async () => {
+    try {
+      const teamsRes = await API.get('/teams/my', authHeader);
+      const teams = teamsRes.data;
+      const statsPromises = teams.map(async (team) => {
+        const statsRes = await API.get(`/stats/team/${team.id}`, authHeader);
+        return { ...statsRes.data, teamName: team.name, teamId: team.id };
+      });
+      const allStats = await Promise.all(statsPromises);
+      setTeamStats(allStats);
+    } catch (err) { console.error('Failed to load team stats'); }
   };
 
   const loadNotifications = async () => {
@@ -76,61 +110,37 @@ export default function Dashboard() {
 
   const handleLogout = () => { logoutUser(); navigate('/login'); };
 
-  const doughnutData = {
-    labels: ['To Do', 'In Progress', 'Done'],
-    datasets: [{ data: [stats?.todoTasks || 0, stats?.inProgressTasks || 0, stats?.doneTasks || 0], backgroundColor: ['#6b7280', '#f59e0b', '#10b981'], borderWidth: 0 }],
-  };
-
-  const barData = {
-    labels: ['To Do', 'In Progress', 'Done'],
-    datasets: [{ label: 'Tasks', data: [stats?.todoTasks || 0, stats?.inProgressTasks || 0, stats?.doneTasks || 0], backgroundColor: ['#6b7280', '#f59e0b', '#10b981'], borderRadius: 8 }],
-  };
-
   return (
     <div style={styles.container}>
+      {/* Navbar */}
       <div style={styles.navbar}>
         <h1 style={styles.logo}>TeamSync</h1>
         <div style={styles.navRight}>
           <span style={styles.welcome}>👋 Welcome, {user?.name}!</span>
-
-          {/* Notification Bell */}
           <div style={styles.notifWrapper} ref={notifRef}>
             <button style={styles.bellBtn} onClick={() => setShowNotifications(!showNotifications)}>
               🔔
-              {unreadCount > 0 && (
-                <span style={styles.badge}>{unreadCount}</span>
-              )}
+              {unreadCount > 0 && <span style={styles.badge}>{unreadCount}</span>}
             </button>
-
             {showNotifications && (
               <div style={styles.notifDropdown}>
                 <div style={styles.notifHeader}>
                   <span style={styles.notifTitle}>Notifications</span>
-                  {unreadCount > 0 && (
-                    <button style={styles.markAllBtn} onClick={markAllRead}>
-                      Mark all read
-                    </button>
-                  )}
+                  {unreadCount > 0 && <button style={styles.markAllBtn} onClick={markAllRead}>Mark all read</button>}
                 </div>
                 {notifications.length === 0 ? (
                   <p style={styles.noNotif}>No notifications yet!</p>
                 ) : (
                   notifications.map(n => (
-                    <div
-                      key={n.id}
-                      style={{ ...styles.notifItem, background: n.isRead ? 'white' : '#f0f0ff' }}
-                      onClick={() => markRead(n.id)}>
+                    <div key={n.id} style={{ ...styles.notifItem, background: n.isRead ? 'white' : '#f0f0ff' }} onClick={() => markRead(n.id)}>
                       <p style={styles.notifMsg}>{n.message}</p>
-                      <p style={styles.notifTime}>
-                        {new Date(n.createdAt).toLocaleString()}
-                      </p>
+                      <p style={styles.notifTime}>{new Date(n.createdAt).toLocaleString()}</p>
                     </div>
                   ))
                 )}
               </div>
             )}
           </div>
-
           <button style={styles.logoutBtn} onClick={handleLogout}>Logout</button>
         </div>
       </div>
@@ -138,40 +148,88 @@ export default function Dashboard() {
       <div style={styles.content}>
         <h2 style={styles.heading}>Your Dashboard</h2>
 
+        {/* Overall Stats */}
         <div style={styles.statsRow}>
           <div style={styles.statCard}>
-            <h3 style={styles.statNum}>{stats?.totalTeams || 0}</h3>
+            <h3 style={styles.statNum}>{overallStats?.totalTeams || 0}</h3>
             <p style={styles.statLabel}>👥 Teams</p>
           </div>
           <div style={styles.statCard}>
-            <h3 style={styles.statNum}>{stats?.totalTasks || 0}</h3>
+            <h3 style={styles.statNum}>{overallStats?.totalTasks || 0}</h3>
             <p style={styles.statLabel}>📋 Total Tasks</p>
           </div>
           <div style={styles.statCard}>
-            <h3 style={styles.statNum}>{stats?.doneTasks || 0}</h3>
+            <h3 style={styles.statNum}>{overallStats?.doneTasks || 0}</h3>
             <p style={styles.statLabel}>✅ Completed</p>
           </div>
           <div style={{ ...styles.statCard, background: '#4f46e5' }}>
-            <h3 style={{ ...styles.statNum, color: 'white' }}>{stats?.completionRate || 0}%</h3>
-            <p style={{ ...styles.statLabel, color: 'rgba(255,255,255,0.8)' }}>🎯 Completion Rate</p>
+            <h3 style={{ ...styles.statNum, color: 'white' }}>{overallStats?.completionRate || 0}%</h3>
+            <p style={{ ...styles.statLabel, color: 'rgba(255,255,255,0.8)' }}>🎯 Overall Rate</p>
           </div>
         </div>
 
-        {stats && stats.totalTasks > 0 && (
-          <div style={styles.chartsRow}>
-            <div style={styles.chartCard}>
-              <h3 style={styles.chartTitle}>Task Status Overview</h3>
-              <div style={{ width: '250px', margin: '0 auto' }}>
-                <Doughnut data={doughnutData} />
-              </div>
+        {/* Per Team Stats */}
+        {teamStats.length > 0 && (
+          <>
+            <h3 style={styles.sectionTitle}>📊 Stats Per Team</h3>
+            <div style={styles.teamStatsGrid}>
+              {teamStats.map((ts) => (
+                <div key={ts.teamId} style={styles.teamStatCard}>
+                  <h3 style={styles.teamName}>👥 {ts.teamName}</h3>
+                  <div style={styles.teamStatRow}>
+                    <div style={styles.miniStat}>
+                      <span style={styles.miniNum}>{ts.totalTasks}</span>
+                      <span style={styles.miniLabel}>Total</span>
+                    </div>
+                    <div style={styles.miniStat}>
+                      <span style={{ ...styles.miniNum, color: '#6b7280' }}>{ts.todoTasks}</span>
+                      <span style={styles.miniLabel}>To Do</span>
+                    </div>
+                    <div style={styles.miniStat}>
+                      <span style={{ ...styles.miniNum, color: '#f59e0b' }}>{ts.inProgressTasks}</span>
+                      <span style={styles.miniLabel}>In Progress</span>
+                    </div>
+                    <div style={styles.miniStat}>
+                      <span style={{ ...styles.miniNum, color: '#10b981' }}>{ts.doneTasks}</span>
+                      <span style={styles.miniLabel}>Done</span>
+                    </div>
+                  </div>
+                  {ts.totalTasks > 0 && (
+                    <>
+                      <div style={styles.progressBar}>
+                        <div style={{ ...styles.progressFill, width: `${ts.completionRate}%` }} />
+                      </div>
+                      <p style={styles.progressLabel}>{ts.completionRate}% Complete</p>
+                      <div style={{ width: '140px', margin: '12px auto 0' }}>
+                        <Doughnut
+                          data={{
+                            labels: ['To Do', 'In Progress', 'Done'],
+                            datasets: [{
+                              data: [ts.todoTasks, ts.inProgressTasks, ts.doneTasks],
+                              backgroundColor: ['#6b7280', '#f59e0b', '#10b981'],
+                              borderWidth: 0,
+                            }]
+                          }}
+                          options={{ plugins: { legend: { display: false } } }}
+                        />
+                      </div>
+                    </>
+                  )}
+                  {ts.totalTasks === 0 && (
+                    <p style={styles.noTasks}>No tasks yet!</p>
+                  )}
+                  <button
+                    style={styles.goBtn}
+                    onClick={() => navigate('/tasks')}>
+                    View Tasks →
+                  </button>
+                </div>
+              ))}
             </div>
-            <div style={styles.chartCard}>
-              <h3 style={styles.chartTitle}>Tasks by Status</h3>
-              <Bar data={barData} options={{ responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }} />
-            </div>
-          </div>
+          </>
         )}
 
+        {/* Navigation Cards */}
         <div style={styles.cards}>
           <div style={styles.card} onClick={() => navigate('/teams')}>
             <h3>👥 My Teams</h3>
@@ -214,14 +272,24 @@ const styles = {
   noNotif: { padding: '24px', textAlign: 'center', color: '#9ca3af' },
   content: { padding: '32px' },
   heading: { color: '#333', marginBottom: '24px' },
+  sectionTitle: { color: '#333', marginBottom: '16px', marginTop: '8px' },
   statsRow: { display: 'flex', gap: '16px', marginBottom: '32px', flexWrap: 'wrap' },
   statCard: { background: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', flex: 1, minWidth: '150px', textAlign: 'center' },
   statNum: { fontSize: '36px', fontWeight: 'bold', color: '#4f46e5', margin: '0 0 8px 0' },
   statLabel: { color: '#666', margin: 0, fontSize: '14px' },
-  chartsRow: { display: 'flex', gap: '24px', marginBottom: '32px', flexWrap: 'wrap' },
-  chartCard: { background: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', flex: 1, minWidth: '300px' },
-  chartTitle: { color: '#333', marginTop: 0, marginBottom: '16px' },
-  cards: { display: 'flex', gap: '24px', flexWrap: 'wrap' },
+  teamStatsGrid: { display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '32px' },
+  teamStatCard: { background: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', flex: 1, minWidth: '250px', textAlign: 'center' },
+  teamName: { color: '#4f46e5', marginTop: 0, marginBottom: '16px', fontSize: '16px' },
+  teamStatRow: { display: 'flex', justifyContent: 'space-around', marginBottom: '12px' },
+  miniStat: { display: 'flex', flexDirection: 'column', alignItems: 'center' },
+  miniNum: { fontSize: '24px', fontWeight: 'bold', color: '#4f46e5' },
+  miniLabel: { fontSize: '11px', color: '#9ca3af', marginTop: '2px' },
+  progressBar: { background: '#f0f0f0', borderRadius: '8px', height: '8px', margin: '8px 0 4px' },
+  progressFill: { background: '#10b981', borderRadius: '8px', height: '8px', transition: 'width 0.3s ease' },
+  progressLabel: { color: '#10b981', fontSize: '12px', fontWeight: 'bold', margin: '0' },
+  noTasks: { color: '#9ca3af', fontSize: '14px', margin: '16px 0' },
+  goBtn: { marginTop: '16px', padding: '8px 16px', background: '#4f46e5', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' },
+  cards: { display: 'flex', gap: '24px', flexWrap: 'wrap', marginTop: '32px' },
   card: { background: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', minWidth: '200px', flex: 1, cursor: 'pointer' },
   cardBtn: { marginTop: '12px', padding: '8px 16px', background: '#4f46e5', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' },
 };
