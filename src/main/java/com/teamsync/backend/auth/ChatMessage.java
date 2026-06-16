@@ -8,5 +8,9 @@ public class ChatMessage {
     private Long senderId;
     private String senderName;
     private String content;
+    private String messageType;
+    private String audioDataUrl;
+    private Integer audioDurationSeconds;
+    private String mediaMimeType;
     private String sentAt;
 }

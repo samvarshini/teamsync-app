@@ -21,6 +21,19 @@ public class Message {
 
     private String content;
 
+    @Column(name = "message_type")
+    private String messageType = "TEXT";
+
+    @Lob
+    @Column(name = "audio_data_url", columnDefinition = "TEXT")
+    private String audioDataUrl;
+
+    @Column(name = "audio_duration_seconds")
+    private Integer audioDurationSeconds;
+
+    @Column(name = "media_mime_type")
+    private String mediaMimeType;
+
     @Column(name = "sent_at")
     private LocalDateTime sentAt = LocalDateTime.now();
 }

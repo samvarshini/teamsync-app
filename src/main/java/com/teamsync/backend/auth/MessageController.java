@@ -32,15 +32,22 @@ public class MessageController {
 
     @MessageMapping("/chat/{teamId}")
     public void sendMessage(@Payload ChatMessage chatMessage) {
+        String messageType = chatMessage.getMessageType() == null ? "TEXT" : chatMessage.getMessageType();
+
         // Save message
         Message message = new Message();
         message.setTeamId(chatMessage.getTeamId());
         message.setSenderId(chatMessage.getSenderId());
         message.setContent(chatMessage.getContent());
+        message.setMessageType(messageType);
+        message.setAudioDataUrl(chatMessage.getAudioDataUrl());
+        message.setAudioDurationSeconds(chatMessage.getAudioDurationSeconds());
+        message.setMediaMimeType(chatMessage.getMediaMimeType());
         message.setSentAt(LocalDateTime.now());
         messageRepository.save(message);
 
         chatMessage.setSentAt(message.getSentAt().toString());
+        chatMessage.setMessageType(messageType);
 
         // Broadcast to team
         messagingTemplate.convertAndSend(
@@ -63,13 +70,70 @@ public class MessageController {
         for (Long memberId : memberIds) {
             Notification notification = new Notification();
             notification.setUserId(memberId);
-            notification.setMessage("💬 " + chatMessage.getSenderName() +
-                " sent a message in " + teamName + ": \"" +
-                chatMessage.getContent().substring(0, Math.min(30, chatMessage.getContent().length())) +
-                (chatMessage.getContent().length() > 30 ? "..." : "") + "\"");
+            if ("VOICE".equalsIgnoreCase(messageType)) {
+                notification.setMessage("🎙 " + chatMessage.getSenderName() +
+                    " sent you a voice message in " + teamName);
+            } else {
+                String content = chatMessage.getContent() == null ? "" : chatMessage.getContent();
+                notification.setMessage("💬 " + chatMessage.getSenderName() +
+                    " sent a message in " + teamName + ": \"" +
+                    content.substring(0, Math.min(30, content.length())) +
+                    (content.length() > 30 ? "..." : "") + "\"");
+            }
             notificationRepository.save(notification);
 
             // Send real-time notification
+            messagingTemplate.convertAndSend(
+                "/topic/notifications/" + memberId,
+                notification
+            );
+        }
+    }
+
+    @MessageMapping("/call/{teamId}")
+    public void signalCall(@Payload CallSignal callSignal) {
+        boolean senderIsMember = teamMemberRepository
+                .findByTeamId(callSignal.getTeamId())
+                .stream()
+                .anyMatch(member -> member.getUserId().equals(callSignal.getSenderId()));
+
+        if (!senderIsMember) {
+            return;
+        }
+
+        messagingTemplate.convertAndSend(
+            "/topic/calls/" + callSignal.getTeamId(),
+            callSignal
+        );
+
+        String type = callSignal.getType() == null ? "" : callSignal.getType();
+        if (!type.equals("CALL_INVITE") && !type.equals("SCREEN_SHARE_INVITE")) {
+            return;
+        }
+
+        String teamName = teamRepository.findById(callSignal.getTeamId())
+                .map(t -> t.getName()).orElse("your team");
+
+        List<Long> memberIds = teamMemberRepository
+                .findByTeamId(callSignal.getTeamId())
+                .stream()
+                .map(m -> m.getUserId())
+                .filter(id -> !id.equals(callSignal.getSenderId()))
+                .filter(id -> callSignal.getTargetUserId() == null || id.equals(callSignal.getTargetUserId()))
+                .toList();
+
+        for (Long memberId : memberIds) {
+            Notification notification = new Notification();
+            notification.setUserId(memberId);
+            if (type.equals("SCREEN_SHARE_INVITE")) {
+                notification.setMessage("🖥 " + callSignal.getSenderName() +
+                    " started screen sharing in " + teamName);
+            } else {
+                notification.setMessage("📹 " + callSignal.getSenderName() +
+                    " started a video call in " + teamName);
+            }
+            notificationRepository.save(notification);
+
             messagingTemplate.convertAndSend(
                 "/topic/notifications/" + memberId,
                 notification
