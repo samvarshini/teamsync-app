@@ -6,6 +6,8 @@ import MicIcon from '@mui/icons-material/Mic';
 import StopIcon from '@mui/icons-material/Stop';
 import CloseIcon from '@mui/icons-material/Close';
 import SendIcon from '@mui/icons-material/Send';
+import AttachFileIcon from '@mui/icons-material/AttachFile';
+import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import VideocamIcon from '@mui/icons-material/Videocam';
 import VideocamOffIcon from '@mui/icons-material/VideocamOff';
 import CallEndIcon from '@mui/icons-material/CallEnd';
@@ -88,6 +90,36 @@ const readBlobAsDataUrl = (blob) => new Promise((resolve, reject) => {
   reader.readAsDataURL(blob);
 });
 
+const allowedAttachmentTypes = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'application/pdf',
+]);
+
+const createClientMessageId = (userId) => `msg-${userId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+const formatFileSize = (bytes = 0) => {
+  if (!bytes) return '';
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+const getStatusLabel = (status) => {
+  switch (status) {
+    case 'SENDING':
+      return 'Sending';
+    case 'DELIVERED':
+      return '✓✓ Delivered';
+    case 'SEEN':
+      return '✓✓ Seen';
+    case 'SENT':
+    default:
+      return '✓ Sent';
+  }
+};
+
 function VoiceMessage({ msg, isMe }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
@@ -133,6 +165,31 @@ function VoiceMessage({ msg, isMe }) {
       </div>
       <span style={styles.duration}>{formatDuration(msg.audioDurationSeconds)}</span>
     </div>
+  );
+}
+
+function AttachmentMessage({ msg, isMe }) {
+  const isImage = msg.mediaMimeType?.startsWith('image/');
+
+  if (isImage) {
+    return (
+      <a href={msg.attachmentDataUrl} target="_blank" rel="noreferrer" style={styles.attachmentLink}>
+        <img src={msg.attachmentDataUrl} alt={msg.attachmentFileName || 'Attachment'} style={styles.attachmentImage} />
+        {msg.attachmentFileName && (
+          <span style={{ ...styles.attachmentName, color: isMe ? 'white' : 'var(--text-secondary)' }}>
+            {msg.attachmentFileName}
+          </span>
+        )}
+      </a>
+    );
+  }
+
+  return (
+    <a href={msg.attachmentDataUrl} download={msg.attachmentFileName} target="_blank" rel="noreferrer" style={{ ...styles.fileAttachment, color: isMe ? 'white' : 'var(--text-primary)' }}>
+      <InsertDriveFileIcon fontSize="small" />
+      <span style={styles.fileName}>{msg.attachmentFileName || 'Attachment'}</span>
+      <span style={styles.fileSize}>{formatFileSize(msg.attachmentFileSize)}</span>
+    </a>
   );
 }
 
@@ -196,6 +253,7 @@ export default function ChatPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [voiceDraft, setVoiceDraft] = useState(null);
+  const [attachmentDraft, setAttachmentDraft] = useState(null);
   const [callState, setCallState] = useState('idle');
   const [callId, setCallId] = useState(null);
   const [incomingCall, setIncomingCall] = useState(null);
@@ -212,6 +270,8 @@ export default function ChatPage() {
   const recorderRef = useRef(null);
   const recordingChunksRef = useRef([]);
   const recordingTimerRef = useRef(null);
+  const recordingSecondsRef = useRef(0);
+  const fileInputRef = useRef(null);
   const peersRef = useRef({});
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
@@ -231,6 +291,64 @@ export default function ChatPage() {
     if (userId === user?.id) return user.name;
     return memberNames[userId] || fallback || '';
   }, [memberNames, user]);
+
+  const normalizeMessage = useCallback((msg) => ({
+    id: msg.id,
+    teamId: msg.teamId,
+    senderId: msg.senderId,
+    senderName: msg.senderName || getDisplayName(msg.senderId),
+    content: msg.content,
+    clientMessageId: msg.clientMessageId,
+    messageType: msg.messageType || 'TEXT',
+    audioDataUrl: msg.audioDataUrl,
+    audioDurationSeconds: msg.audioDurationSeconds,
+    mediaMimeType: msg.mediaMimeType,
+    attachmentDataUrl: msg.attachmentDataUrl,
+    attachmentFileName: msg.attachmentFileName,
+    attachmentFileSize: msg.attachmentFileSize,
+    deliveryStatus: msg.deliveryStatus || 'SENT',
+    callId: msg.callId,
+    callStatus: msg.callStatus,
+    callMediaType: msg.callMediaType,
+    callInitiatorId: msg.callInitiatorId,
+    callDurationSeconds: msg.callDurationSeconds,
+    sentAt: msg.sentAt,
+  }), [getDisplayName]);
+
+  const upsertMessage = useCallback((incoming) => {
+    setMessages((prev) => {
+      const existingIndex = prev.findIndex((msg) => (
+        (incoming.id && msg.id === incoming.id)
+        || (incoming.clientMessageId && msg.clientMessageId === incoming.clientMessageId)
+      ));
+
+      if (existingIndex === -1) return [...prev, incoming];
+
+      const next = [...prev];
+      next[existingIndex] = {
+        ...next[existingIndex],
+        ...incoming,
+        deliveryStatus: incoming.deliveryStatus || next[existingIndex].deliveryStatus,
+      };
+      return next;
+    });
+  }, []);
+
+  const publishMessageStatus = useCallback((message, deliveryStatus) => {
+    if (!message?.id || !clientRef.current?.connected || !selectedTeam || !user || message.senderId === user.id) {
+      return;
+    }
+
+    clientRef.current.publish({
+      destination: `/app/chat-status/${selectedTeam.id}`,
+      body: JSON.stringify({
+        id: message.id,
+        teamId: selectedTeam.id,
+        senderId: user.id,
+        deliveryStatus,
+      }),
+    });
+  }, [selectedTeam, user]);
 
   const publishSignal = useCallback((signal) => {
     if (!clientRef.current?.connected || !selectedTeam || !user) return;
@@ -377,7 +495,9 @@ export default function ChatPage() {
         ...prev,
         [participantId]: {
           ...prev[participantId],
-          stream,
+          ...(prev[participantId]?.screenSharing && stream.getAudioTracks().length === 0
+            ? { screenStream: stream }
+            : { stream }),
           active: true,
         },
       }));
@@ -401,6 +521,18 @@ export default function ChatPage() {
 
     return peer;
   }, [callState, ensureLocalStream, publishSignal]);
+
+  const renegotiatePeer = useCallback(async (participantId, peer) => {
+    if (!peer || peer.signalingState !== 'stable') return;
+
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    publishSignal({
+      type: 'WEBRTC_OFFER',
+      targetUserId: Number(participantId),
+      payload: JSON.stringify(offer),
+    });
+  }, [publishSignal]);
 
   const handleSignal = useCallback(async (signal) => {
     if (!user || signal.senderId === user.id || signal.teamId !== selectedTeam?.id) return;
@@ -507,6 +639,16 @@ export default function ChatPage() {
           },
         }));
         break;
+      case 'SCREEN_SHARE_STOPPED':
+        setParticipants((prev) => ({
+          ...prev,
+          [signal.senderId]: {
+            ...prev[signal.senderId],
+            screenSharing: false,
+            screenStream: null,
+          },
+        }));
+        break;
       case 'SCREEN_CONTROL_REQUEST':
         if (screenStreamRef.current) setControlRequest(signal);
         break;
@@ -564,6 +706,14 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  useEffect(() => {
+    if (!connected) return;
+
+    messages
+      .filter((message) => message.senderId !== user.id && message.messageType !== 'CALL')
+      .forEach((message) => publishMessageStatus(message, 'SEEN'));
+  }, [connected, messages, publishMessageStatus, user.id]);
+
   useEffect(() => () => {
     Object.values(peersRef.current).forEach((peer) => peer.close());
     stopMediaStream(localStreamRef.current);
@@ -586,22 +736,11 @@ export default function ChatPage() {
       const res = await API.get(`/messages/${teamId}`, {
         headers: { Authorization: `Bearer ${user.token}` }
       });
-      setMessages(res.data.map(m => ({
-        teamId: m.teamId,
-        senderId: m.senderId,
-        senderName: m.senderName || getDisplayName(m.senderId),
-        content: m.content,
-        messageType: m.messageType || 'TEXT',
-        audioDataUrl: m.audioDataUrl,
-        audioDurationSeconds: m.audioDurationSeconds,
-        mediaMimeType: m.mediaMimeType,
-        callId: m.callId,
-        callStatus: m.callStatus,
-        callMediaType: m.callMediaType,
-        callInitiatorId: m.callInitiatorId,
-        callDurationSeconds: m.callDurationSeconds,
-        sentAt: m.sentAt,
-      })));
+      const loadedMessages = res.data.map(normalizeMessage);
+      setMessages(loadedMessages);
+      loadedMessages
+        .filter((message) => message.senderId !== user.id && message.messageType !== 'CALL')
+        .forEach((message) => publishMessageStatus(message, 'SEEN'));
     } catch (err) {
       console.error('Failed to load messages');
     }
@@ -629,12 +768,20 @@ export default function ChatPage() {
       onConnect: () => {
         setConnected(true);
         client.subscribe(`/topic/team/${teamId}`, (message) => {
-          const msg = JSON.parse(message.body);
-          setMessages((prev) => [...prev, {
-            ...msg,
-            senderName: msg.senderName || getDisplayName(msg.senderId),
-            messageType: msg.messageType || 'TEXT',
-          }]);
+          const msg = normalizeMessage(JSON.parse(message.body));
+          upsertMessage(msg);
+          if (msg.senderId !== user.id && msg.messageType !== 'CALL') {
+            publishMessageStatus(msg, 'DELIVERED');
+            publishMessageStatus(msg, 'SEEN');
+          }
+        });
+        client.subscribe(`/topic/team/${teamId}/status`, (message) => {
+          const statusMessage = JSON.parse(message.body);
+          setMessages((prev) => prev.map((msg) => (
+            msg.id === statusMessage.id
+              ? { ...msg, deliveryStatus: statusMessage.deliveryStatus || msg.deliveryStatus }
+              : msg
+          )));
         });
         client.subscribe(`/topic/calls/${teamId}`, (message) => {
           handleSignalRef.current?.(JSON.parse(message.body));
@@ -655,17 +802,22 @@ export default function ChatPage() {
   const sendMessage = () => {
     if (!input.trim() || !clientRef.current?.connected) return;
 
+    const clientMessageId = createClientMessageId(user.id);
     const msg = {
       teamId: selectedTeam.id,
       senderId: user.id,
       senderName: user.name,
       content: input,
+      clientMessageId,
       messageType: 'TEXT',
+      deliveryStatus: 'SENDING',
+      sentAt: new Date().toISOString(),
     };
 
+    upsertMessage(msg);
     clientRef.current.publish({
       destination: `/app/chat/${selectedTeam.id}`,
-      body: JSON.stringify(msg),
+      body: JSON.stringify({ ...msg, deliveryStatus: undefined }),
     });
 
     setInput('');
@@ -688,16 +840,21 @@ export default function ChatPage() {
       setVoiceDraft({
         blob,
         url,
-        duration: recordingSeconds,
+        duration: recordingSecondsRef.current,
         mimeType: blob.type,
       });
       stream.getTracks().forEach((track) => track.stop());
     };
 
+    recordingSecondsRef.current = 0;
     setRecordingSeconds(0);
     setIsRecording(true);
     recordingTimerRef.current = setInterval(() => {
-      setRecordingSeconds((value) => value + 1);
+      setRecordingSeconds((value) => {
+        const nextValue = value + 1;
+        recordingSecondsRef.current = nextValue;
+        return nextValue;
+      });
     }, 1000);
     recorder.start();
   };
@@ -719,27 +876,80 @@ export default function ChatPage() {
     if (voiceDraft?.url) URL.revokeObjectURL(voiceDraft.url);
     setVoiceDraft(null);
     setRecordingSeconds(0);
+    recordingSecondsRef.current = 0;
   };
 
   const sendVoiceDraft = async () => {
     if (!voiceDraft || !clientRef.current?.connected) return;
 
     const audioDataUrl = await readBlobAsDataUrl(voiceDraft.blob);
+    const clientMessageId = createClientMessageId(user.id);
+    const msg = {
+      teamId: selectedTeam.id,
+      senderId: user.id,
+      senderName: user.name,
+      content: 'Voice message',
+      clientMessageId,
+      messageType: 'VOICE',
+      audioDataUrl,
+      audioDurationSeconds: voiceDraft.duration,
+      mediaMimeType: voiceDraft.mimeType,
+      deliveryStatus: 'SENDING',
+      sentAt: new Date().toISOString(),
+    };
+
+    upsertMessage(msg);
     clientRef.current.publish({
       destination: `/app/chat/${selectedTeam.id}`,
-      body: JSON.stringify({
-        teamId: selectedTeam.id,
-        senderId: user.id,
-        senderName: user.name,
-        content: 'Voice message',
-        messageType: 'VOICE',
-        audioDataUrl,
-        audioDurationSeconds: voiceDraft.duration,
-        mediaMimeType: voiceDraft.mimeType,
-      }),
+      body: JSON.stringify({ ...msg, deliveryStatus: undefined }),
     });
 
     cancelVoiceDraft();
+  };
+
+  const handleAttachmentSelect = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file || !allowedAttachmentTypes.has(file.type)) return;
+
+    const dataUrl = await readBlobAsDataUrl(file);
+    setAttachmentDraft({
+      dataUrl,
+      fileName: file.name,
+      fileSize: file.size,
+      mimeType: file.type,
+    });
+  };
+
+  const cancelAttachmentDraft = () => {
+    setAttachmentDraft(null);
+  };
+
+  const sendAttachmentDraft = () => {
+    if (!attachmentDraft || !clientRef.current?.connected) return;
+
+    const clientMessageId = createClientMessageId(user.id);
+    const msg = {
+      teamId: selectedTeam.id,
+      senderId: user.id,
+      senderName: user.name,
+      content: attachmentDraft.fileName,
+      clientMessageId,
+      messageType: 'ATTACHMENT',
+      mediaMimeType: attachmentDraft.mimeType,
+      attachmentDataUrl: attachmentDraft.dataUrl,
+      attachmentFileName: attachmentDraft.fileName,
+      attachmentFileSize: attachmentDraft.fileSize,
+      deliveryStatus: 'SENDING',
+      sentAt: new Date().toISOString(),
+    };
+
+    upsertMessage(msg);
+    clientRef.current.publish({
+      destination: `/app/chat/${selectedTeam.id}`,
+      body: JSON.stringify({ ...msg, deliveryStatus: undefined }),
+    });
+    setAttachmentDraft(null);
   };
 
   const startCall = async () => {
@@ -830,9 +1040,10 @@ export default function ChatPage() {
     setScreenStream(stream);
     stream.getVideoTracks()[0].onended = () => stopScreenShare();
 
-    Object.values(peersRef.current).forEach((peer) => {
+    await Promise.all(Object.entries(peersRef.current).map(async ([participantId, peer]) => {
       stream.getTracks().forEach((track) => peer.addTrack(track, stream));
-    });
+      await renegotiatePeer(participantId, peer);
+    }));
 
     publishSignal({
       type: 'SCREEN_SHARE_INVITE',
@@ -840,8 +1051,18 @@ export default function ChatPage() {
     });
   };
 
-  const stopScreenShare = () => {
-    stopMediaStream(screenStreamRef.current);
+  const stopScreenShare = async () => {
+    const currentScreenStream = screenStreamRef.current;
+    if (!currentScreenStream) return;
+
+    Object.entries(peersRef.current).forEach(([participantId, peer]) => {
+      peer.getSenders()
+        .filter((sender) => sender.track && currentScreenStream.getTracks().includes(sender.track))
+        .forEach((sender) => peer.removeTrack(sender));
+      renegotiatePeer(participantId, peer);
+    });
+
+    stopMediaStream(currentScreenStream);
     screenStreamRef.current = null;
     setScreenStream(null);
     publishSignal({ type: 'SCREEN_SHARE_STOPPED', screenSharing: false });
@@ -926,18 +1147,20 @@ export default function ChatPage() {
           {messages.map((msg, i) => {
             const isMe = msg.senderId === user.id;
             return (
-              <div key={`${msg.sentAt || i}-${i}`} style={{ ...styles.msgRow, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
+              <div key={msg.id || msg.clientMessageId || `${msg.sentAt || i}-${i}`} style={{ ...styles.msgRow, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
                 <div style={{ ...styles.msgBubble, background: isMe ? 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))' : 'var(--glass-bg)', color: isMe ? 'white' : 'var(--text-primary)' }}>
                   {!isMe && msg.messageType !== 'CALL' && <p style={styles.senderName}>{msg.senderName}</p>}
                   {msg.messageType === 'VOICE' ? (
                     <VoiceMessage msg={msg} isMe={isMe} />
+                  ) : msg.messageType === 'ATTACHMENT' ? (
+                    <AttachmentMessage msg={msg} isMe={isMe} />
                   ) : msg.messageType === 'CALL' ? (
                     <CallBadge msg={msg} isMe={msg.callInitiatorId === user.id || isMe} />
                   ) : (
                     <p style={styles.msgContent}>{msg.content}</p>
                   )}
                   <p style={{ ...styles.msgTime, color: isMe ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)' }}>
-                    {formatMessageTime(msg.sentAt)}
+                    {formatMessageTime(msg.sentAt)} {isMe && msg.messageType !== 'CALL' ? getStatusLabel(msg.deliveryStatus) : ''}
                   </p>
                 </div>
               </div>
@@ -959,7 +1182,41 @@ export default function ChatPage() {
           </div>
         )}
 
+        {attachmentDraft && (
+          <div style={styles.voicePreview}>
+            {attachmentDraft.mimeType.startsWith('image/') ? (
+              <img src={attachmentDraft.dataUrl} alt={attachmentDraft.fileName} style={styles.attachmentPreviewImage} />
+            ) : (
+              <InsertDriveFileIcon fontSize="small" />
+            )}
+            <span style={styles.previewMeta}>{attachmentDraft.fileName}</span>
+            <span style={styles.previewMeta}>{formatFileSize(attachmentDraft.fileSize)}</span>
+            <button type="button" title="Cancel attachment" style={styles.iconButton} onClick={cancelAttachmentDraft}>
+              <CloseIcon fontSize="small" />
+            </button>
+            <button type="button" title="Send attachment" style={styles.sendIconButton} onClick={sendAttachmentDraft}>
+              <SendIcon fontSize="small" />
+            </button>
+          </div>
+        )}
+
         <div style={styles.inputArea}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/gif,image/webp,application/pdf"
+            style={styles.hiddenInput}
+            onChange={handleAttachmentSelect}
+          />
+          <button
+            type="button"
+            title="Attach image or PDF"
+            style={styles.recordBtn}
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!connected}
+          >
+            <AttachFileIcon fontSize="small" />
+          </button>
           <button
             type="button"
             title={isRecording ? 'Stop recording' : 'Record voice message'}
@@ -1005,13 +1262,21 @@ export default function ChatPage() {
             <VideoTile stream={localStream} name={`${user.name} (you)`} muted active />
             {screenStream && <VideoTile stream={screenStream} name="Your screen" muted isScreen />}
             {remoteParticipants.map(([id, participant]) => (
-              <VideoTile
-                key={id}
-                stream={participant.stream}
-                name={participant.name}
-                isScreen={participant.screenSharing}
-                active={participant.active}
-              />
+              <div key={id} style={styles.participantVideos}>
+                <VideoTile
+                  stream={participant.stream}
+                  name={participant.name}
+                  active={participant.active}
+                />
+                {participant.screenStream && (
+                  <VideoTile
+                    stream={participant.screenStream}
+                    name={`${participant.name}'s screen`}
+                    isScreen
+                    active={participant.active}
+                  />
+                )}
+              </div>
             ))}
           </div>
           <div style={styles.callControls}>
@@ -1074,6 +1339,12 @@ const styles = {
   callBadgeContent: { display: 'flex', flexDirection: 'column', gap: '4px' },
   callDuration: { margin: 0, fontSize: '12px', opacity: 0.8 },
   msgTime: { margin: '4px 0 0 0', fontSize: '10px', textAlign: 'right' },
+  attachmentLink: { display: 'flex', flexDirection: 'column', gap: '6px', color: 'inherit', textDecoration: 'none' },
+  attachmentImage: { maxWidth: '260px', maxHeight: '220px', borderRadius: '12px', objectFit: 'cover', display: 'block' },
+  attachmentName: { fontSize: '12px', fontWeight: 700, overflowWrap: 'anywhere' },
+  fileAttachment: { display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', minWidth: '220px' },
+  fileName: { fontSize: '14px', fontWeight: 800, overflowWrap: 'anywhere' },
+  fileSize: { fontSize: '11px', opacity: 0.75, marginLeft: 'auto' },
   voiceMessage: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: '230px' },
   iconButton: { width: '34px', height: '34px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'var(--glass-bg-soft)', color: 'var(--text-primary)', display: 'grid', placeItems: 'center', cursor: 'pointer', flex: '0 0 auto' },
   lightIconButton: { background: 'rgba(255,255,255,0.18)', color: 'white' },
@@ -1082,9 +1353,11 @@ const styles = {
   duration: { fontSize: '12px', fontWeight: 700 },
   voicePreview: { padding: '12px 24px', background: 'var(--glass-bg)', borderLeft: '1px solid var(--border-color)', borderRight: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '12px' },
   previewAudio: { height: '36px', flex: 1, minWidth: '160px' },
+  attachmentPreviewImage: { width: '52px', height: '52px', borderRadius: '10px', objectFit: 'cover' },
   previewMeta: { color: 'var(--text-secondary)', fontWeight: 700 },
   sendIconButton: { width: '34px', height: '34px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', display: 'grid', placeItems: 'center', cursor: 'pointer', flex: '0 0 auto' },
   inputArea: { padding: '16px 24px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '0 0 22px 22px', display: 'flex', alignItems: 'center', gap: '12px', boxShadow: 'var(--shadow-soft)' },
+  hiddenInput: { display: 'none' },
   input: { flex: 1, minWidth: 0, padding: '13px 15px', borderRadius: '16px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)', fontSize: '14px' },
   sendBtn: { padding: '12px 24px', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', border: '1px solid var(--border-color)', borderRadius: '16px', cursor: 'pointer', fontSize: '14px', fontWeight: 700 },
   recordBtn: { width: '42px', height: '42px', borderRadius: '14px', border: '1px solid var(--border-color)', background: 'var(--glass-bg-soft)', color: 'var(--text-primary)', display: 'grid', placeItems: 'center', cursor: 'pointer', flex: '0 0 auto' },
@@ -1098,6 +1371,7 @@ const styles = {
   rejectBtn: { width: '36px', height: '36px', borderRadius: '12px', border: 0, background: 'var(--error)', color: 'white', display: 'grid', placeItems: 'center', cursor: 'pointer' },
   callPanel: { position: 'absolute', inset: '72px 32px 32px 332px', zIndex: 15, display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px', background: 'rgba(15, 23, 42, 0.88)', border: '1px solid var(--border-color)', borderRadius: '22px', boxShadow: 'var(--shadow-soft)', backdropFilter: 'blur(20px)' },
   videoGrid: { flex: 1, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', minHeight: 0 },
+  participantVideos: { display: 'contents' },
   videoTile: { position: 'relative', overflow: 'hidden', borderRadius: '18px', background: '#101827', border: '1px solid rgba(255,255,255,0.12)', minHeight: '180px' },
   activeVideoTile: { boxShadow: '0 0 0 2px var(--primary-accent)' },
   video: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
