@@ -14,14 +14,44 @@ const getNotificationKey = (notification) => [
 
 const getNotificationText = (notification) => notification.message || 'New TeamSync notification';
 
-const getNotificationSender = (message) => {
+const getNotificationDetails = (message) => {
   const chatMatch = message.match(/^💬\s(.+?)\ssent a message/);
-  return chatMatch?.[1] || 'TeamSync';
-};
+  if (chatMatch) {
+    const previewMatch = message.match(/: "(.+)"$/);
+    return {
+      title: chatMatch[1],
+      body: previewMatch?.[1] || 'Sent you a message',
+    };
+  }
 
-const getNotificationPreview = (message) => {
-  const previewMatch = message.match(/: "(.+)"$/);
-  return previewMatch?.[1] || message;
+  const voiceMatch = message.match(/^🎙\s(.+?)\ssent you a voice message in\s(.+)$/);
+  if (voiceMatch) {
+    return {
+      title: voiceMatch[1],
+      body: 'Sent you a voice message',
+    };
+  }
+
+  const callMatch = message.match(/^📹\s(.+?)\sstarted a video call in\s(.+)$/);
+  if (callMatch) {
+    return {
+      title: callMatch[2],
+      body: `${callMatch[1]} started a video call`,
+    };
+  }
+
+  const screenMatch = message.match(/^🖥\s(.+?)\sstarted screen sharing in\s(.+)$/);
+  if (screenMatch) {
+    return {
+      title: screenMatch[2],
+      body: `${screenMatch[1]} started screen sharing`,
+    };
+  }
+
+  return {
+    title: 'TeamSync',
+    body: message,
+  };
 };
 
 export default function GlobalNotificationListener() {
@@ -61,6 +91,10 @@ export default function GlobalNotificationListener() {
   useEffect(() => {
     if (!user?.id) return undefined;
 
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+
     const playSound = () => {
       const audio = audioRef.current;
       if (!audio) return;
@@ -73,9 +107,9 @@ export default function GlobalNotificationListener() {
     const showDesktopNotification = (notification) => {
       if (!('Notification' in window) || Notification.permission !== 'granted') return;
 
-      const message = getNotificationText(notification);
-      new Notification(getNotificationSender(message), {
-        body: getNotificationPreview(message),
+      const details = getNotificationDetails(getNotificationText(notification));
+      new Notification(details.title, {
+        body: details.body,
         icon: '/logo192.png',
       });
     };

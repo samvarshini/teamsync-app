@@ -1,10 +1,27 @@
-import { useState, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
+import MicIcon from '@mui/icons-material/Mic';
+import StopIcon from '@mui/icons-material/Stop';
+import CloseIcon from '@mui/icons-material/Close';
+import SendIcon from '@mui/icons-material/Send';
+import VideocamIcon from '@mui/icons-material/Videocam';
+import VideocamOffIcon from '@mui/icons-material/VideocamOff';
+import CallEndIcon from '@mui/icons-material/CallEnd';
+import ScreenShareIcon from '@mui/icons-material/ScreenShare';
+import StopScreenShareIcon from '@mui/icons-material/StopScreenShare';
+import VolumeOffIcon from '@mui/icons-material/VolumeOff';
+import VolumeUpIcon from '@mui/icons-material/VolumeUp';
+import PanToolIcon from '@mui/icons-material/PanTool';
+import CheckIcon from '@mui/icons-material/Check';
+import BlockIcon from '@mui/icons-material/Block';
 import { getMyTeams } from '../services/teamService';
 import API from '../services/api';
 import ThemeToggle from '../components/ThemeToggle';
+
+const WS_URL = 'https://teamsync-app-6guk.onrender.com/ws';
+const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
 const formatMessageTime = (sentAt) => {
   if (!sentAt) return '';
@@ -20,16 +37,341 @@ const formatMessageTime = (sentAt) => {
   });
 };
 
+const formatDuration = (seconds = 0) => {
+  const safeSeconds = Math.max(0, Math.round(seconds));
+  const mins = Math.floor(safeSeconds / 60);
+  const secs = String(safeSeconds % 60).padStart(2, '0');
+  return `${mins}:${secs}`;
+};
+
+const readBlobAsDataUrl = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onloadend = () => resolve(reader.result);
+  reader.onerror = reject;
+  reader.readAsDataURL(blob);
+});
+
+function VoiceMessage({ msg, isMe }) {
+  const audioRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+
+  const togglePlayback = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (audio.paused) {
+      audio.play().catch(() => {});
+      setPlaying(true);
+    } else {
+      audio.pause();
+      setPlaying(false);
+    }
+  };
+
+  return (
+    <div style={styles.voiceMessage}>
+      <audio
+        ref={audioRef}
+        src={msg.audioDataUrl}
+        onTimeUpdate={(event) => {
+          const audio = event.currentTarget;
+          setProgress(audio.duration ? (audio.currentTime / audio.duration) * 100 : 0);
+        }}
+        onEnded={() => {
+          setPlaying(false);
+          setProgress(0);
+        }}
+      />
+      <button
+        type="button"
+        aria-label={playing ? 'Pause voice message' : 'Play voice message'}
+        style={{ ...styles.iconButton, ...(isMe ? styles.lightIconButton : {}) }}
+        onClick={togglePlayback}
+      >
+        {playing ? <StopIcon fontSize="small" /> : <VolumeUpIcon fontSize="small" />}
+      </button>
+      <div style={styles.voiceTrack}>
+        <div style={{ ...styles.voiceProgress, width: `${progress}%` }} />
+      </div>
+      <span style={styles.duration}>{formatDuration(msg.audioDurationSeconds)}</span>
+    </div>
+  );
+}
+
+function VideoTile({ stream, name, muted, isScreen, active }) {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = stream || null;
+  }, [stream]);
+
+  return (
+    <div style={{ ...styles.videoTile, ...(active ? styles.activeVideoTile : {}) }}>
+      {stream ? (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted={muted}
+          style={styles.video}
+        />
+      ) : (
+        <div style={styles.videoPlaceholder}>{name?.charAt(0)?.toUpperCase() || '?'}</div>
+      )}
+      <div style={styles.videoBadge}>{isScreen ? 'Screen' : name}</div>
+    </div>
+  );
+}
+
 export default function ChatPage() {
   const [teams, setTeams] = useState([]);
   const [selectedTeam, setSelectedTeam] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [connected, setConnected] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const [voiceDraft, setVoiceDraft] = useState(null);
+  const [callState, setCallState] = useState('idle');
+  const [callId, setCallId] = useState(null);
+  const [incomingCall, setIncomingCall] = useState(null);
+  const [participants, setParticipants] = useState({});
+  const [localStream, setLocalStream] = useState(null);
+  const [screenStream, setScreenStream] = useState(null);
+  const [micMuted, setMicMuted] = useState(false);
+  const [cameraOff, setCameraOff] = useState(false);
+  const [controlRequest, setControlRequest] = useState(null);
+  const [controlStatus, setControlStatus] = useState('idle');
+
   const clientRef = useRef(null);
   const bottomRef = useRef(null);
+  const recorderRef = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const recordingTimerRef = useRef(null);
+  const peersRef = useRef({});
+  const localStreamRef = useRef(null);
+  const screenStreamRef = useRef(null);
+  const handleSignalRef = useRef(null);
+  const processedSignalsRef = useRef(new Set());
   const navigate = useNavigate();
-  const user = JSON.parse(localStorage.getItem('user'));
+  const user = useMemo(() => JSON.parse(localStorage.getItem('user')), []);
+
+  const publishSignal = useCallback((signal) => {
+    if (!clientRef.current?.connected || !selectedTeam || !user) return;
+
+    clientRef.current.publish({
+      destination: `/app/call/${selectedTeam.id}`,
+      body: JSON.stringify({
+        callId,
+        teamId: selectedTeam.id,
+        senderId: user.id,
+        senderName: user.name,
+        ...signal,
+      }),
+    });
+  }, [callId, selectedTeam, user]);
+
+  const stopMediaStream = useCallback((stream) => {
+    stream?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  const cleanupCall = useCallback((notify = true) => {
+    if (notify && callState !== 'idle') {
+      publishSignal({ type: 'LEAVE_CALL' });
+    }
+
+    Object.values(peersRef.current).forEach((peer) => peer.close());
+    peersRef.current = {};
+    stopMediaStream(localStreamRef.current);
+    stopMediaStream(screenStreamRef.current);
+    localStreamRef.current = null;
+    screenStreamRef.current = null;
+    setLocalStream(null);
+    setScreenStream(null);
+    setParticipants({});
+    setIncomingCall(null);
+    setCallState('idle');
+    setCallId(null);
+    setMicMuted(false);
+    setCameraOff(false);
+    setControlRequest(null);
+    setControlStatus('idle');
+  }, [callState, publishSignal, stopMediaStream]);
+
+  const ensureLocalStream = useCallback(async () => {
+    if (localStreamRef.current) return localStreamRef.current;
+
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localStreamRef.current = stream;
+    setLocalStream(stream);
+    return stream;
+  }, []);
+
+  const createPeer = useCallback(async (participantId, initiator) => {
+    const local = await ensureLocalStream();
+    const peer = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    peersRef.current[participantId] = peer;
+
+    local.getTracks().forEach((track) => peer.addTrack(track, local));
+    screenStreamRef.current?.getTracks().forEach((track) => peer.addTrack(track, screenStreamRef.current));
+
+    peer.onicecandidate = (event) => {
+      if (event.candidate) {
+        publishSignal({
+          type: 'ICE_CANDIDATE',
+          targetUserId: participantId,
+          payload: JSON.stringify(event.candidate),
+        });
+      }
+    };
+
+    peer.ontrack = (event) => {
+      const [stream] = event.streams;
+      setParticipants((prev) => ({
+        ...prev,
+        [participantId]: {
+          ...prev[participantId],
+          stream,
+          active: true,
+        },
+      }));
+    };
+
+    peer.onconnectionstatechange = () => {
+      if (['failed', 'disconnected'].includes(peer.connectionState) && callState !== 'idle') {
+        publishSignal({ type: 'RECONNECT_REQUEST', targetUserId: participantId });
+      }
+    };
+
+    if (initiator) {
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      publishSignal({
+        type: 'WEBRTC_OFFER',
+        targetUserId: participantId,
+        payload: JSON.stringify(offer),
+      });
+    }
+
+    return peer;
+  }, [callState, ensureLocalStream, publishSignal]);
+
+  const handleSignal = useCallback(async (signal) => {
+    if (!user || signal.senderId === user.id || signal.teamId !== selectedTeam?.id) return;
+
+    const signalKey = [
+      signal.callId,
+      signal.senderId,
+      signal.targetUserId,
+      signal.type,
+      signal.payload?.slice?.(0, 40),
+    ].join('|');
+    if (processedSignalsRef.current.has(signalKey)) return;
+    processedSignalsRef.current.add(signalKey);
+
+    if (signal.targetUserId && signal.targetUserId !== user.id) return;
+
+    switch (signal.type) {
+      case 'CALL_INVITE':
+        if (callState === 'idle') {
+          setIncomingCall(signal);
+          setCallId(signal.callId);
+          setCallState('ringing');
+        }
+        break;
+      case 'CALL_ACCEPTED':
+      case 'JOIN_CALL':
+        if (callState !== 'idle') {
+          setParticipants((prev) => ({
+            ...prev,
+            [signal.senderId]: {
+              name: signal.senderName || signal.participantName || 'Teammate',
+              active: true,
+            },
+          }));
+          await createPeer(signal.senderId, true);
+        }
+        break;
+      case 'CALL_REJECTED':
+        if (signal.targetUserId === user.id || !signal.targetUserId) {
+          setIncomingCall(null);
+        }
+        break;
+      case 'WEBRTC_OFFER': {
+        const peer = peersRef.current[signal.senderId] || await createPeer(signal.senderId, false);
+        await peer.setRemoteDescription(JSON.parse(signal.payload));
+        const answer = await peer.createAnswer();
+        await peer.setLocalDescription(answer);
+        publishSignal({
+          type: 'WEBRTC_ANSWER',
+          targetUserId: signal.senderId,
+          payload: JSON.stringify(answer),
+        });
+        setParticipants((prev) => ({
+          ...prev,
+          [signal.senderId]: {
+            ...prev[signal.senderId],
+            name: signal.senderName || prev[signal.senderId]?.name || 'Teammate',
+            active: true,
+          },
+        }));
+        break;
+      }
+      case 'WEBRTC_ANSWER': {
+        const peer = peersRef.current[signal.senderId];
+        if (peer) await peer.setRemoteDescription(JSON.parse(signal.payload));
+        break;
+      }
+      case 'ICE_CANDIDATE': {
+        const peer = peersRef.current[signal.senderId];
+        if (peer && signal.payload) await peer.addIceCandidate(JSON.parse(signal.payload));
+        break;
+      }
+      case 'SCREEN_SHARE_INVITE':
+        setParticipants((prev) => ({
+          ...prev,
+          [signal.senderId]: {
+            ...prev[signal.senderId],
+            name: signal.senderName || 'Teammate',
+            screenSharing: true,
+            active: true,
+          },
+        }));
+        break;
+      case 'SCREEN_CONTROL_REQUEST':
+        if (screenStreamRef.current) setControlRequest(signal);
+        break;
+      case 'SCREEN_CONTROL_GRANTED':
+        setControlStatus('granted');
+        break;
+      case 'SCREEN_CONTROL_DENIED':
+      case 'SCREEN_CONTROL_REVOKED':
+        setControlStatus(signal.type === 'SCREEN_CONTROL_DENIED' ? 'denied' : 'revoked');
+        break;
+      case 'LEAVE_CALL':
+        peersRef.current[signal.senderId]?.close();
+        delete peersRef.current[signal.senderId];
+        setParticipants((prev) => {
+          const next = { ...prev };
+          delete next[signal.senderId];
+          return next;
+        });
+        break;
+      case 'END_CALL':
+        cleanupCall(false);
+        break;
+      case 'RECONNECT_REQUEST':
+        if (callState !== 'idle') await createPeer(signal.senderId, true);
+        break;
+      default:
+        break;
+    }
+  }, [callState, cleanupCall, createPeer, publishSignal, selectedTeam?.id, user]);
+
+  useEffect(() => {
+    handleSignalRef.current = handleSignal;
+  }, [handleSignal]);
 
   useEffect(() => {
     loadTeams();
@@ -40,14 +382,25 @@ export default function ChatPage() {
       loadMessages(selectedTeam.id);
       connectWebSocket(selectedTeam.id);
     }
+
     return () => {
       if (clientRef.current) clientRef.current.deactivate();
+      setConnected(false);
     };
+    // Chat sockets should reconnect only when the selected team changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTeam]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => () => {
+    Object.values(peersRef.current).forEach((peer) => peer.close());
+    stopMediaStream(localStreamRef.current);
+    stopMediaStream(screenStreamRef.current);
+    clearInterval(recordingTimerRef.current);
+  }, [stopMediaStream]);
 
   const loadTeams = async () => {
     try {
@@ -69,6 +422,10 @@ export default function ChatPage() {
         senderId: m.senderId,
         senderName: m.senderId === user.id ? user.name : 'Teammate',
         content: m.content,
+        messageType: m.messageType || 'TEXT',
+        audioDataUrl: m.audioDataUrl,
+        audioDurationSeconds: m.audioDurationSeconds,
+        mediaMimeType: m.mediaMimeType,
         sentAt: m.sentAt,
       })));
     } catch (err) {
@@ -80,13 +437,19 @@ export default function ChatPage() {
     if (clientRef.current) clientRef.current.deactivate();
 
     const client = new Client({
-      webSocketFactory: () => new SockJS('https://teamsync-app-6guk.onrender.com/ws'),
+      webSocketFactory: () => new SockJS(WS_URL),
       reconnectDelay: 5000,
       onConnect: () => {
         setConnected(true);
         client.subscribe(`/topic/team/${teamId}`, (message) => {
           const msg = JSON.parse(message.body);
-          setMessages((prev) => [...prev, msg]);
+          setMessages((prev) => [...prev, {
+            ...msg,
+            messageType: msg.messageType || 'TEXT',
+          }]);
+        });
+        client.subscribe(`/topic/calls/${teamId}`, (message) => {
+          handleSignalRef.current?.(JSON.parse(message.body));
         });
       },
       onDisconnect: () => {
@@ -109,6 +472,7 @@ export default function ChatPage() {
       senderId: user.id,
       senderName: user.name,
       content: input,
+      messageType: 'TEXT',
     };
 
     clientRef.current.publish({
@@ -119,16 +483,189 @@ export default function ChatPage() {
     setInput('');
   };
 
+  const startRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || isRecording) return;
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const recorder = new MediaRecorder(stream);
+    recordingChunksRef.current = [];
+    recorderRef.current = recorder;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) recordingChunksRef.current.push(event.data);
+    };
+    recorder.onstop = () => {
+      const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'audio/webm' });
+      const url = URL.createObjectURL(blob);
+      setVoiceDraft({
+        blob,
+        url,
+        duration: recordingSeconds,
+        mimeType: blob.type,
+      });
+      stream.getTracks().forEach((track) => track.stop());
+    };
+
+    setRecordingSeconds(0);
+    setIsRecording(true);
+    recordingTimerRef.current = setInterval(() => {
+      setRecordingSeconds((value) => value + 1);
+    }, 1000);
+    recorder.start();
+  };
+
+  const stopRecording = () => {
+    if (!recorderRef.current || recorderRef.current.state === 'inactive') return;
+    clearInterval(recordingTimerRef.current);
+    recorderRef.current.stop();
+    setIsRecording(false);
+  };
+
+  const cancelVoiceDraft = () => {
+    if (isRecording) {
+      clearInterval(recordingTimerRef.current);
+      recorderRef.current?.stream?.getTracks().forEach((track) => track.stop());
+      recorderRef.current?.stop();
+      setIsRecording(false);
+    }
+    if (voiceDraft?.url) URL.revokeObjectURL(voiceDraft.url);
+    setVoiceDraft(null);
+    setRecordingSeconds(0);
+  };
+
+  const sendVoiceDraft = async () => {
+    if (!voiceDraft || !clientRef.current?.connected) return;
+
+    const audioDataUrl = await readBlobAsDataUrl(voiceDraft.blob);
+    clientRef.current.publish({
+      destination: `/app/chat/${selectedTeam.id}`,
+      body: JSON.stringify({
+        teamId: selectedTeam.id,
+        senderId: user.id,
+        senderName: user.name,
+        content: 'Voice message',
+        messageType: 'VOICE',
+        audioDataUrl,
+        audioDurationSeconds: voiceDraft.duration,
+        mediaMimeType: voiceDraft.mimeType,
+      }),
+    });
+
+    cancelVoiceDraft();
+  };
+
+  const startCall = async () => {
+    await ensureLocalStream();
+    const nextCallId = `call-${selectedTeam.id}-${Date.now()}`;
+    setCallId(nextCallId);
+    setCallState('active');
+    publishSignal({
+      type: 'CALL_INVITE',
+      callId: nextCallId,
+    });
+  };
+
+  const acceptCall = async () => {
+    await ensureLocalStream();
+    setCallState('active');
+    publishSignal({
+      type: 'CALL_ACCEPTED',
+      callId: incomingCall.callId,
+      targetUserId: incomingCall.senderId,
+    });
+    setIncomingCall(null);
+  };
+
+  const rejectCall = () => {
+    publishSignal({
+      type: 'CALL_REJECTED',
+      callId: incomingCall?.callId,
+      targetUserId: incomingCall?.senderId,
+    });
+    cleanupCall(false);
+  };
+
+  const endCall = () => {
+    publishSignal({ type: 'END_CALL' });
+    cleanupCall(false);
+  };
+
+  const toggleMic = () => {
+    localStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = micMuted;
+    });
+    setMicMuted((value) => !value);
+  };
+
+  const toggleCamera = () => {
+    localStreamRef.current?.getVideoTracks().forEach((track) => {
+      track.enabled = cameraOff;
+    });
+    setCameraOff((value) => !value);
+  };
+
+  const startScreenShare = async () => {
+    if (!navigator.mediaDevices?.getDisplayMedia) return;
+
+    const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    screenStreamRef.current = stream;
+    setScreenStream(stream);
+    stream.getVideoTracks()[0].onended = () => stopScreenShare();
+
+    Object.values(peersRef.current).forEach((peer) => {
+      stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+    });
+
+    publishSignal({
+      type: 'SCREEN_SHARE_INVITE',
+      screenSharing: true,
+    });
+  };
+
+  const stopScreenShare = () => {
+    stopMediaStream(screenStreamRef.current);
+    screenStreamRef.current = null;
+    setScreenStream(null);
+    publishSignal({ type: 'SCREEN_SHARE_STOPPED', screenSharing: false });
+    setControlRequest(null);
+  };
+
+  const requestControl = (participantId) => {
+    setControlStatus('requested');
+    publishSignal({
+      type: 'SCREEN_CONTROL_REQUEST',
+      targetUserId: participantId,
+      controlRequested: true,
+    });
+  };
+
+  const respondToControl = (granted) => {
+    publishSignal({
+      type: granted ? 'SCREEN_CONTROL_GRANTED' : 'SCREEN_CONTROL_DENIED',
+      targetUserId: controlRequest.senderId,
+      controlGranted: granted,
+    });
+    setControlRequest(null);
+  };
+
+  const revokeControl = () => {
+    publishSignal({ type: 'SCREEN_CONTROL_REVOKED' });
+    setControlStatus('revoked');
+  };
+
   const handleKeyPress = (e) => {
     if (e.key === 'Enter') sendMessage();
   };
+
+  const remoteParticipants = Object.entries(participants);
+  const screenOwner = remoteParticipants.find(([, participant]) => participant.screenSharing);
 
   return (
     <div style={styles.container}>
       <div style={styles.sidebar}>
         <div style={styles.sidebarHeader}>
-          <h3 style={styles.sidebarTitle}>💬 Chats</h3>
-          <button style={styles.backBtn} onClick={() => navigate('/dashboard')}>← Back</button>
+          <h3 style={styles.sidebarTitle}>Chats</h3>
+          <button style={styles.backBtn} onClick={() => navigate('/dashboard')}>Back</button>
         </div>
         {teams.map(team => (
           <div
@@ -136,7 +673,7 @@ export default function ChatPage() {
             style={{ ...styles.teamItem, background: selectedTeam?.id === team.id ? 'linear-gradient(135deg, rgba(var(--primary-accent-rgb),0.24), rgba(var(--secondary-accent-rgb),0.26))' : 'transparent' }}
             onClick={() => setSelectedTeam(team)}>
             <span style={{ color: selectedTeam?.id === team.id ? 'white' : 'var(--text-secondary)' }}>
-              👥 {team.name}
+              {team.name}
             </span>
           </div>
         ))}
@@ -149,23 +686,36 @@ export default function ChatPage() {
           </h3>
           <div style={styles.headerActions}>
             <span style={{ ...styles.status, color: connected ? 'var(--success)' : 'var(--error)' }}>
-              {connected ? '🟢 Connected' : '🔴 Connecting...'}
+              {connected ? 'Connected' : 'Connecting...'}
             </span>
+            <button
+              type="button"
+              title="Start group video call"
+              style={styles.headerIconButton}
+              onClick={startCall}
+              disabled={!connected || callState !== 'idle'}
+            >
+              <VideocamIcon fontSize="small" />
+            </button>
             <ThemeToggle />
           </div>
         </div>
 
         <div style={styles.messages}>
           {messages.length === 0 && (
-            <p style={styles.empty}>No messages yet. Say hello! 👋</p>
+            <p style={styles.empty}>No messages yet. Say hello!</p>
           )}
           {messages.map((msg, i) => {
             const isMe = msg.senderId === user.id;
             return (
-              <div key={i} style={{ ...styles.msgRow, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
+              <div key={`${msg.sentAt || i}-${i}`} style={{ ...styles.msgRow, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
                 <div style={{ ...styles.msgBubble, background: isMe ? 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))' : 'var(--glass-bg)', color: isMe ? 'white' : 'var(--text-primary)' }}>
                   {!isMe && <p style={styles.senderName}>{msg.senderName}</p>}
-                  <p style={styles.msgContent}>{msg.content}</p>
+                  {msg.messageType === 'VOICE' ? (
+                    <VoiceMessage msg={msg} isMe={isMe} />
+                  ) : (
+                    <p style={styles.msgContent}>{msg.content}</p>
+                  )}
                   <p style={{ ...styles.msgTime, color: isMe ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)' }}>
                     {formatMessageTime(msg.sentAt)}
                   </p>
@@ -176,10 +726,33 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
 
+        {voiceDraft && (
+          <div style={styles.voicePreview}>
+            <audio src={voiceDraft.url} controls style={styles.previewAudio} />
+            <span style={styles.previewMeta}>{formatDuration(voiceDraft.duration)}</span>
+            <button type="button" title="Cancel voice message" style={styles.iconButton} onClick={cancelVoiceDraft}>
+              <CloseIcon fontSize="small" />
+            </button>
+            <button type="button" title="Send voice message" style={styles.sendIconButton} onClick={sendVoiceDraft}>
+              <SendIcon fontSize="small" />
+            </button>
+          </div>
+        )}
+
         <div style={styles.inputArea}>
+          <button
+            type="button"
+            title={isRecording ? 'Stop recording' : 'Record voice message'}
+            style={{ ...styles.recordBtn, ...(isRecording ? styles.recordingBtn : {}) }}
+            onClick={isRecording ? stopRecording : startRecording}
+            disabled={!connected}
+          >
+            {isRecording ? <StopIcon fontSize="small" /> : <MicIcon fontSize="small" />}
+          </button>
+          {isRecording && <span style={styles.recordingTimer}>{formatDuration(recordingSeconds)}</span>}
           <input
             style={styles.input}
-            placeholder={connected ? "Type a message... (Enter to send)" : "Connecting to chat..."}
+            placeholder={connected ? 'Type a message... (Enter to send)' : 'Connecting to chat...'}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyPress={handleKeyPress}
@@ -189,34 +762,130 @@ export default function ChatPage() {
             style={{ ...styles.sendBtn, opacity: connected ? 1 : 0.5 }}
             onClick={sendMessage}
             disabled={!connected}>
-            Send 🚀
+            Send
           </button>
         </div>
       </div>
+
+      {incomingCall && callState === 'ringing' && (
+        <div style={styles.callToast}>
+          <div style={styles.avatar}>{incomingCall.senderName?.charAt(0)?.toUpperCase() || '?'}</div>
+          <div>
+            <p style={styles.callTitle}>{incomingCall.senderName}</p>
+            <p style={styles.callSubtitle}>Incoming video call</p>
+          </div>
+          <button type="button" style={styles.acceptBtn} onClick={acceptCall}><CheckIcon fontSize="small" /></button>
+          <button type="button" style={styles.rejectBtn} onClick={rejectCall}><CloseIcon fontSize="small" /></button>
+        </div>
+      )}
+
+      {callState === 'active' && (
+        <div style={styles.callPanel}>
+          <div style={styles.videoGrid}>
+            <VideoTile stream={localStream} name={`${user.name} (you)`} muted active />
+            {screenStream && <VideoTile stream={screenStream} name="Your screen" muted isScreen />}
+            {remoteParticipants.map(([id, participant]) => (
+              <VideoTile
+                key={id}
+                stream={participant.stream}
+                name={participant.name}
+                isScreen={participant.screenSharing}
+                active={participant.active}
+              />
+            ))}
+          </div>
+          <div style={styles.callControls}>
+            <button type="button" title={micMuted ? 'Unmute mic' : 'Mute mic'} style={styles.callControlBtn} onClick={toggleMic}>
+              {micMuted ? <VolumeOffIcon /> : <VolumeUpIcon />}
+            </button>
+            <button type="button" title={cameraOff ? 'Turn camera on' : 'Turn camera off'} style={styles.callControlBtn} onClick={toggleCamera}>
+              {cameraOff ? <VideocamOffIcon /> : <VideocamIcon />}
+            </button>
+            <button type="button" title={screenStream ? 'Stop screen sharing' : 'Share screen'} style={styles.callControlBtn} onClick={screenStream ? stopScreenShare : startScreenShare}>
+              {screenStream ? <StopScreenShareIcon /> : <ScreenShareIcon />}
+            </button>
+            {screenOwner && (
+              <button type="button" title="Request screen control" style={styles.callControlBtn} onClick={() => requestControl(Number(screenOwner[0]))}>
+                <PanToolIcon />
+              </button>
+            )}
+            {screenStream && (
+              <button type="button" title="Revoke screen control" style={styles.callControlBtn} onClick={revokeControl}>
+                <BlockIcon />
+              </button>
+            )}
+            <button type="button" title="End call" style={styles.endCallBtn} onClick={endCall}>
+              <CallEndIcon />
+            </button>
+            <span style={styles.controlStatus}>{controlStatus !== 'idle' ? `Control ${controlStatus}` : ''}</span>
+          </div>
+          {controlRequest && (
+            <div style={styles.controlPrompt}>
+              <span>{controlRequest.senderName} requested screen control</span>
+              <button type="button" style={styles.acceptSmall} onClick={() => respondToControl(true)}>Grant</button>
+              <button type="button" style={styles.rejectSmall} onClick={() => respondToControl(false)}>Deny</button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 const styles = {
-  container: { display: 'flex', height: '100vh', background: 'transparent', padding: '20px', gap: '20px' },
+  container: { display: 'flex', height: '100vh', background: 'transparent', padding: '20px', gap: '20px', position: 'relative' },
   sidebar: { width: '280px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '24px', boxShadow: 'var(--shadow-soft)', display: 'flex', flexDirection: 'column', overflow: 'hidden' },
   sidebarHeader: { padding: '16px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   sidebarTitle: { margin: 0, color: 'var(--text-primary)' },
   backBtn: { padding: '8px 12px', background: 'var(--glass-bg-soft)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '12px', cursor: 'pointer', fontSize: '12px', fontWeight: 700 },
   teamItem: { padding: '13px 16px', cursor: 'pointer', borderRadius: '16px', margin: '6px 10px', border: '1px solid var(--border-color)', transition: 'background 220ms ease, transform 220ms ease' },
-  chatArea: { flex: 1, display: 'flex', flexDirection: 'column' },
+  chatArea: { flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 },
   chatHeader: { padding: '18px 24px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '22px 22px 0 0', boxShadow: 'var(--shadow-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
   chatTitle: { margin: 0, color: 'var(--text-primary)' },
   headerActions: { display: 'flex', alignItems: 'center', gap: '12px' },
   status: { fontSize: '14px' },
+  headerIconButton: { width: '38px', height: '38px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'var(--glass-bg-soft)', color: 'var(--text-primary)', display: 'grid', placeItems: 'center', cursor: 'pointer' },
   messages: { flex: 1, padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', background: 'var(--glass-bg-soft)', borderLeft: '1px solid var(--border-color)', borderRight: '1px solid var(--border-color)' },
   empty: { textAlign: 'center', color: 'var(--text-muted)', marginTop: '48px' },
   msgRow: { display: 'flex' },
   msgBubble: { maxWidth: '62%', padding: '13px 16px', borderRadius: '18px', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-soft)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' },
   senderName: { margin: '0 0 4px 0', fontSize: '11px', fontWeight: 'bold', color: 'var(--primary-accent)' },
-  msgContent: { margin: 0, fontSize: '14px' },
+  msgContent: { margin: 0, fontSize: '14px', overflowWrap: 'anywhere' },
   msgTime: { margin: '4px 0 0 0', fontSize: '10px', textAlign: 'right' },
-  inputArea: { padding: '16px 24px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '0 0 22px 22px', display: 'flex', gap: '12px', boxShadow: 'var(--shadow-soft)' },
-  input: { flex: 1, padding: '13px 15px', borderRadius: '16px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)', fontSize: '14px' },
+  voiceMessage: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: '230px' },
+  iconButton: { width: '34px', height: '34px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'var(--glass-bg-soft)', color: 'var(--text-primary)', display: 'grid', placeItems: 'center', cursor: 'pointer', flex: '0 0 auto' },
+  lightIconButton: { background: 'rgba(255,255,255,0.18)', color: 'white' },
+  voiceTrack: { height: '8px', flex: 1, minWidth: '120px', borderRadius: '999px', background: 'rgba(255,255,255,0.28)', overflow: 'hidden' },
+  voiceProgress: { height: '100%', borderRadius: '999px', background: 'var(--primary-accent)' },
+  duration: { fontSize: '12px', fontWeight: 700 },
+  voicePreview: { padding: '12px 24px', background: 'var(--glass-bg)', borderLeft: '1px solid var(--border-color)', borderRight: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '12px' },
+  previewAudio: { height: '36px', flex: 1, minWidth: '160px' },
+  previewMeta: { color: 'var(--text-secondary)', fontWeight: 700 },
+  sendIconButton: { width: '34px', height: '34px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', display: 'grid', placeItems: 'center', cursor: 'pointer', flex: '0 0 auto' },
+  inputArea: { padding: '16px 24px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '0 0 22px 22px', display: 'flex', alignItems: 'center', gap: '12px', boxShadow: 'var(--shadow-soft)' },
+  input: { flex: 1, minWidth: 0, padding: '13px 15px', borderRadius: '16px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)', fontSize: '14px' },
   sendBtn: { padding: '12px 24px', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', border: '1px solid var(--border-color)', borderRadius: '16px', cursor: 'pointer', fontSize: '14px', fontWeight: 700 },
+  recordBtn: { width: '42px', height: '42px', borderRadius: '14px', border: '1px solid var(--border-color)', background: 'var(--glass-bg-soft)', color: 'var(--text-primary)', display: 'grid', placeItems: 'center', cursor: 'pointer', flex: '0 0 auto' },
+  recordingBtn: { background: 'var(--error)', color: 'white' },
+  recordingTimer: { color: 'var(--error)', fontWeight: 800, minWidth: '42px' },
+  callToast: { position: 'absolute', top: '24px', right: '24px', zIndex: 20, display: 'flex', alignItems: 'center', gap: '12px', padding: '14px', background: 'var(--glass-bg)', border: '1px solid var(--border-color)', borderRadius: '18px', boxShadow: 'var(--shadow-soft)' },
+  avatar: { width: '42px', height: '42px', borderRadius: '50%', display: 'grid', placeItems: 'center', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', fontWeight: 900 },
+  callTitle: { margin: 0, color: 'var(--text-primary)', fontWeight: 800 },
+  callSubtitle: { margin: '2px 0 0', color: 'var(--text-muted)', fontSize: '12px' },
+  acceptBtn: { width: '36px', height: '36px', borderRadius: '12px', border: 0, background: 'var(--success)', color: 'white', display: 'grid', placeItems: 'center', cursor: 'pointer' },
+  rejectBtn: { width: '36px', height: '36px', borderRadius: '12px', border: 0, background: 'var(--error)', color: 'white', display: 'grid', placeItems: 'center', cursor: 'pointer' },
+  callPanel: { position: 'absolute', inset: '72px 32px 32px 332px', zIndex: 15, display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px', background: 'rgba(15, 23, 42, 0.88)', border: '1px solid var(--border-color)', borderRadius: '22px', boxShadow: 'var(--shadow-soft)', backdropFilter: 'blur(20px)' },
+  videoGrid: { flex: 1, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', minHeight: 0 },
+  videoTile: { position: 'relative', overflow: 'hidden', borderRadius: '18px', background: '#101827', border: '1px solid rgba(255,255,255,0.12)', minHeight: '180px' },
+  activeVideoTile: { boxShadow: '0 0 0 2px var(--primary-accent)' },
+  video: { width: '100%', height: '100%', objectFit: 'cover', display: 'block' },
+  videoPlaceholder: { width: '100%', height: '100%', minHeight: '180px', display: 'grid', placeItems: 'center', color: 'white', fontSize: '46px', fontWeight: 900 },
+  videoBadge: { position: 'absolute', left: '10px', bottom: '10px', padding: '6px 10px', borderRadius: '10px', background: 'rgba(0,0,0,0.5)', color: 'white', fontSize: '12px', fontWeight: 800 },
+  callControls: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', flexWrap: 'wrap' },
+  callControlBtn: { width: '44px', height: '44px', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.16)', background: 'rgba(255,255,255,0.12)', color: 'white', display: 'grid', placeItems: 'center', cursor: 'pointer' },
+  endCallBtn: { width: '50px', height: '44px', borderRadius: '14px', border: 0, background: 'var(--error)', color: 'white', display: 'grid', placeItems: 'center', cursor: 'pointer' },
+  controlStatus: { color: 'white', minWidth: '120px', fontSize: '12px', fontWeight: 800 },
+  controlPrompt: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', color: 'white', fontWeight: 800 },
+  acceptSmall: { padding: '8px 12px', borderRadius: '10px', border: 0, background: 'var(--success)', color: 'white', cursor: 'pointer', fontWeight: 800 },
+  rejectSmall: { padding: '8px 12px', borderRadius: '10px', border: 0, background: 'var(--error)', color: 'white', cursor: 'pointer', fontWeight: 800 },
 };
