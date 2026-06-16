@@ -6,6 +6,7 @@ import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import API from '../services/api';
+import ThemeToggle from '../components/ThemeToggle';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -117,6 +118,7 @@ export default function Dashboard() {
         <h1 style={styles.logo}>TeamSync</h1>
         <div style={styles.navRight}>
           <span style={styles.welcome}>👋 Welcome, {user?.name}!</span>
+          <ThemeToggle />
           <div style={styles.notifWrapper} ref={notifRef}>
             <button style={styles.bellBtn} onClick={() => setShowNotifications(!showNotifications)}>
               🔔
@@ -132,7 +134,7 @@ export default function Dashboard() {
                   <p style={styles.noNotif}>No notifications yet!</p>
                 ) : (
                   notifications.map(n => (
-                    <div key={n.id} style={{ ...styles.notifItem, background: n.isRead ? 'white' : '#f0f0ff' }} onClick={() => markRead(n.id)}>
+                    <div key={n.id} style={{ ...styles.notifItem, background: n.isRead ? 'var(--hover-bg)' : 'rgba(var(--primary-accent-rgb),0.18)' }} onClick={() => markRead(n.id)}>
                       <p style={styles.notifMsg}>{n.message}</p>
                       <p style={styles.notifTime}>{new Date(n.createdAt).toLocaleString()}</p>
                     </div>
@@ -162,7 +164,7 @@ export default function Dashboard() {
             <h3 style={styles.statNum}>{overallStats?.doneTasks || 0}</h3>
             <p style={styles.statLabel}>✅ Completed</p>
           </div>
-          <div style={{ ...styles.statCard, background: '#4f46e5' }}>
+          <div style={{ ...styles.statCard, background: 'linear-gradient(135deg, rgba(var(--primary-accent-rgb),0.26), rgba(var(--secondary-accent-rgb),0.26))' }}>
             <h3 style={{ ...styles.statNum, color: 'white' }}>{overallStats?.completionRate || 0}%</h3>
             <p style={{ ...styles.statLabel, color: 'rgba(255,255,255,0.8)' }}>🎯 Overall Rate</p>
           </div>
@@ -182,15 +184,15 @@ export default function Dashboard() {
                       <span style={styles.miniLabel}>Total</span>
                     </div>
                     <div style={styles.miniStat}>
-                      <span style={{ ...styles.miniNum, color: '#6b7280' }}>{ts.todoTasks}</span>
+                      <span style={{ ...styles.miniNum, color: 'var(--text-secondary)' }}>{ts.todoTasks}</span>
                       <span style={styles.miniLabel}>To Do</span>
                     </div>
                     <div style={styles.miniStat}>
-                      <span style={{ ...styles.miniNum, color: '#f59e0b' }}>{ts.inProgressTasks}</span>
+                      <span style={{ ...styles.miniNum, color: 'var(--warning)' }}>{ts.inProgressTasks}</span>
                       <span style={styles.miniLabel}>In Progress</span>
                     </div>
                     <div style={styles.miniStat}>
-                      <span style={{ ...styles.miniNum, color: '#10b981' }}>{ts.doneTasks}</span>
+                      <span style={{ ...styles.miniNum, color: 'var(--success)' }}>{ts.doneTasks}</span>
                       <span style={styles.miniLabel}>Done</span>
                     </div>
                   </div>
@@ -206,7 +208,7 @@ export default function Dashboard() {
                             labels: ['To Do', 'In Progress', 'Done'],
                             datasets: [{
                               data: [ts.todoTasks, ts.inProgressTasks, ts.doneTasks],
-                              backgroundColor: ['#6b7280', '#f59e0b', '#10b981'],
+                              backgroundColor: ['#CBD5E1', '#F59E0B', '#22C55E'],
                               borderWidth: 0,
                             }]
                           }}
@@ -253,43 +255,43 @@ export default function Dashboard() {
 }
 
 const styles = {
-  container: { minHeight: '100vh', background: '#f0f2f5' },
-  navbar: { background: 'white', padding: '16px 32px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' },
-  logo: { color: '#4f46e5', margin: 0 },
+  container: { minHeight: '100vh', background: 'transparent' },
+  navbar: { background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', padding: '18px 32px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', boxShadow: 'var(--shadow-soft)', position: 'sticky', top: 0, zIndex: 20 },
+  logo: { color: 'var(--text-primary)', margin: 0, fontSize: '26px', letterSpacing: '0' },
   navRight: { display: 'flex', alignItems: 'center', gap: '16px' },
-  welcome: { color: '#333', fontSize: '16px' },
-  logoutBtn: { padding: '8px 16px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' },
+  welcome: { color: 'var(--text-secondary)', fontSize: '15px' },
+  logoutBtn: { padding: '9px 16px', background: 'rgba(var(--error-rgb),0.16)', color: 'var(--error)', border: '1px solid rgba(var(--error-rgb),0.24)', borderRadius: '14px', cursor: 'pointer', fontWeight: 700 },
   notifWrapper: { position: 'relative' },
-  bellBtn: { background: 'none', border: 'none', fontSize: '24px', cursor: 'pointer', position: 'relative', padding: '4px' },
-  badge: { position: 'absolute', top: '-4px', right: '-4px', background: '#ef4444', color: 'white', borderRadius: '50%', width: '18px', height: '18px', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' },
-  notifDropdown: { position: 'absolute', right: 0, top: '40px', width: '320px', background: 'white', borderRadius: '12px', boxShadow: '0 8px 24px rgba(0,0,0,0.15)', zIndex: 1000, maxHeight: '400px', overflowY: 'auto' },
-  notifHeader: { padding: '16px', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  notifTitle: { fontWeight: 'bold', color: '#333' },
-  markAllBtn: { background: 'none', border: 'none', color: '#4f46e5', cursor: 'pointer', fontSize: '12px' },
-  notifItem: { padding: '12px 16px', borderBottom: '1px solid #f0f0f0', cursor: 'pointer' },
-  notifMsg: { margin: '0 0 4px 0', color: '#333', fontSize: '14px' },
-  notifTime: { margin: 0, color: '#9ca3af', fontSize: '11px' },
-  noNotif: { padding: '24px', textAlign: 'center', color: '#9ca3af' },
-  content: { padding: '32px' },
-  heading: { color: '#333', marginBottom: '24px' },
-  sectionTitle: { color: '#333', marginBottom: '16px', marginTop: '8px' },
-  statsRow: { display: 'flex', gap: '16px', marginBottom: '32px', flexWrap: 'wrap' },
-  statCard: { background: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', flex: 1, minWidth: '150px', textAlign: 'center' },
-  statNum: { fontSize: '36px', fontWeight: 'bold', color: '#4f46e5', margin: '0 0 8px 0' },
-  statLabel: { color: '#666', margin: 0, fontSize: '14px' },
+  bellBtn: { background: 'var(--glass-bg-soft)', border: '1px solid var(--border-color)', borderRadius: '14px', fontSize: '22px', cursor: 'pointer', position: 'relative', padding: '8px 10px', color: 'var(--text-primary)' },
+  badge: { position: 'absolute', top: '-6px', right: '-6px', background: 'var(--error)', color: 'white', borderRadius: '50%', minWidth: '20px', height: '20px', padding: '0 5px', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border-color)' },
+  notifDropdown: { position: 'absolute', right: 0, top: '48px', width: '340px', background: 'var(--glass-bg-strong)', backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)', border: '1px solid var(--border-color)', borderRadius: '20px', boxShadow: 'var(--shadow-strong)', zIndex: 1000, maxHeight: '420px', overflowY: 'auto' },
+  notifHeader: { padding: '16px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  notifTitle: { fontWeight: 'bold', color: 'var(--text-primary)' },
+  markAllBtn: { background: 'rgba(var(--primary-accent-rgb),0.12)', border: '1px solid rgba(var(--primary-accent-rgb),0.22)', color: 'var(--primary-accent)', cursor: 'pointer', fontSize: '12px', borderRadius: '999px', padding: '6px 10px' },
+  notifItem: { padding: '12px 16px', borderBottom: '1px solid var(--border-color)', cursor: 'pointer' },
+  notifMsg: { margin: '0 0 4px 0', color: 'var(--text-primary)', fontSize: '14px' },
+  notifTime: { margin: 0, color: 'var(--text-muted)', fontSize: '11px' },
+  noNotif: { padding: '24px', textAlign: 'center', color: 'var(--text-muted)' },
+  content: { padding: '36px', maxWidth: '1280px', margin: '0 auto' },
+  heading: { color: 'var(--text-primary)', marginBottom: '24px', fontSize: '30px' },
+  sectionTitle: { color: 'var(--text-primary)', marginBottom: '16px', marginTop: '8px' },
+  statsRow: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '18px', marginBottom: '34px' },
+  statCard: { background: 'var(--glass-bg)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', padding: '24px', borderRadius: '22px', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-soft)', flex: 1, minWidth: '150px', textAlign: 'center', transition: 'transform 220ms ease, box-shadow 220ms ease' },
+  statNum: { fontSize: '38px', fontWeight: '800', color: 'var(--primary-accent)', margin: '0 0 8px 0' },
+  statLabel: { color: 'var(--text-secondary)', margin: 0, fontSize: '14px' },
   teamStatsGrid: { display: 'flex', gap: '24px', flexWrap: 'wrap', marginBottom: '32px' },
-  teamStatCard: { background: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', flex: 1, minWidth: '250px', textAlign: 'center' },
-  teamName: { color: '#4f46e5', marginTop: 0, marginBottom: '16px', fontSize: '16px' },
+  teamStatCard: { background: 'var(--glass-bg)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', padding: '24px', borderRadius: '22px', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-soft)', flex: 1, minWidth: '250px', textAlign: 'center' },
+  teamName: { color: 'var(--primary-accent)', marginTop: 0, marginBottom: '16px', fontSize: '16px' },
   teamStatRow: { display: 'flex', justifyContent: 'space-around', marginBottom: '12px' },
   miniStat: { display: 'flex', flexDirection: 'column', alignItems: 'center' },
-  miniNum: { fontSize: '24px', fontWeight: 'bold', color: '#4f46e5' },
-  miniLabel: { fontSize: '11px', color: '#9ca3af', marginTop: '2px' },
-  progressBar: { background: '#f0f0f0', borderRadius: '8px', height: '8px', margin: '8px 0 4px' },
-  progressFill: { background: '#10b981', borderRadius: '8px', height: '8px', transition: 'width 0.3s ease' },
-  progressLabel: { color: '#10b981', fontSize: '12px', fontWeight: 'bold', margin: '0' },
-  noTasks: { color: '#9ca3af', fontSize: '14px', margin: '16px 0' },
-  goBtn: { marginTop: '16px', padding: '8px 16px', background: '#4f46e5', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '13px' },
+  miniNum: { fontSize: '24px', fontWeight: 'bold', color: 'var(--primary-accent)' },
+  miniLabel: { fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' },
+  progressBar: { background: 'var(--hover-bg)', borderRadius: '999px', height: '9px', margin: '8px 0 4px', overflow: 'hidden' },
+  progressFill: { background: 'linear-gradient(90deg, var(--primary-accent), var(--success))', borderRadius: '999px', height: '9px', transition: 'width 0.3s ease' },
+  progressLabel: { color: 'var(--success)', fontSize: '12px', fontWeight: 'bold', margin: '0' },
+  noTasks: { color: 'var(--text-muted)', fontSize: '14px', margin: '16px 0' },
+  goBtn: { marginTop: '16px', padding: '9px 16px', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', border: '1px solid var(--border-color)', borderRadius: '14px', cursor: 'pointer', fontSize: '13px', fontWeight: 700 },
   cards: { display: 'flex', gap: '24px', flexWrap: 'wrap', marginTop: '32px' },
-  card: { background: 'white', padding: '24px', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', minWidth: '200px', flex: 1, cursor: 'pointer' },
-  cardBtn: { marginTop: '12px', padding: '8px 16px', background: '#4f46e5', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' },
+  card: { background: 'var(--glass-bg)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)', color: 'var(--text-primary)', padding: '24px', borderRadius: '22px', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-soft)', minWidth: '200px', flex: 1, cursor: 'pointer', transition: 'transform 220ms ease, box-shadow 220ms ease' },
+  cardBtn: { marginTop: '12px', padding: '9px 16px', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', border: '1px solid var(--border-color)', borderRadius: '14px', cursor: 'pointer', fontWeight: 700 },
 };

@@ -4,6 +4,7 @@ import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 import { getMyTeams } from '../services/teamService';
 import API from '../services/api';
+import ThemeToggle from '../components/ThemeToggle';
 
 export default function ChatPage() {
   const [teams, setTeams] = useState([]);
@@ -118,9 +119,9 @@ export default function ChatPage() {
         {teams.map(team => (
           <div
             key={team.id}
-            style={{ ...styles.teamItem, background: selectedTeam?.id === team.id ? '#4f46e5' : 'transparent' }}
+            style={{ ...styles.teamItem, background: selectedTeam?.id === team.id ? 'linear-gradient(135deg, rgba(var(--primary-accent-rgb),0.24), rgba(var(--secondary-accent-rgb),0.26))' : 'transparent' }}
             onClick={() => setSelectedTeam(team)}>
-            <span style={{ color: selectedTeam?.id === team.id ? 'white' : '#333' }}>
+            <span style={{ color: selectedTeam?.id === team.id ? 'white' : 'var(--text-secondary)' }}>
               👥 {team.name}
             </span>
           </div>
@@ -132,9 +133,12 @@ export default function ChatPage() {
           <h3 style={styles.chatTitle}>
             {selectedTeam ? `# ${selectedTeam.name}` : 'Select a team'}
           </h3>
-          <span style={{ ...styles.status, color: connected ? '#10b981' : '#ef4444' }}>
-            {connected ? '🟢 Connected' : '🔴 Connecting...'}
-          </span>
+          <div style={styles.headerActions}>
+            <span style={{ ...styles.status, color: connected ? 'var(--success)' : 'var(--error)' }}>
+              {connected ? '🟢 Connected' : '🔴 Connecting...'}
+            </span>
+            <ThemeToggle />
+          </div>
         </div>
 
         <div style={styles.messages}>
@@ -145,10 +149,10 @@ export default function ChatPage() {
             const isMe = msg.senderId === user.id;
             return (
               <div key={i} style={{ ...styles.msgRow, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
-                <div style={{ ...styles.msgBubble, background: isMe ? '#4f46e5' : 'white', color: isMe ? 'white' : '#333' }}>
+                <div style={{ ...styles.msgBubble, background: isMe ? 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))' : 'var(--glass-bg)', color: isMe ? 'white' : 'var(--text-primary)' }}>
                   {!isMe && <p style={styles.senderName}>{msg.senderName}</p>}
                   <p style={styles.msgContent}>{msg.content}</p>
-                  <p style={{ ...styles.msgTime, color: isMe ? 'rgba(255,255,255,0.7)' : '#9ca3af' }}>
+                  <p style={{ ...styles.msgTime, color: isMe ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)' }}>
                     {msg.sentAt ? new Date(msg.sentAt).toLocaleTimeString() : ''}
                   </p>
                 </div>
@@ -180,24 +184,25 @@ export default function ChatPage() {
 }
 
 const styles = {
-  container: { display: 'flex', height: '100vh', background: '#f0f2f5' },
-  sidebar: { width: '250px', background: 'white', boxShadow: '2px 0 8px rgba(0,0,0,0.1)', display: 'flex', flexDirection: 'column' },
-  sidebarHeader: { padding: '16px', borderBottom: '1px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  sidebarTitle: { margin: 0, color: '#333' },
-  backBtn: { padding: '6px 12px', background: '#6b7280', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' },
-  teamItem: { padding: '12px 16px', cursor: 'pointer', borderRadius: '8px', margin: '4px 8px' },
+  container: { display: 'flex', height: '100vh', background: 'transparent', padding: '20px', gap: '20px' },
+  sidebar: { width: '280px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '24px', boxShadow: 'var(--shadow-soft)', display: 'flex', flexDirection: 'column', overflow: 'hidden' },
+  sidebarHeader: { padding: '16px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  sidebarTitle: { margin: 0, color: 'var(--text-primary)' },
+  backBtn: { padding: '8px 12px', background: 'var(--glass-bg-soft)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '12px', cursor: 'pointer', fontSize: '12px', fontWeight: 700 },
+  teamItem: { padding: '13px 16px', cursor: 'pointer', borderRadius: '16px', margin: '6px 10px', border: '1px solid var(--border-color)', transition: 'background 220ms ease, transform 220ms ease' },
   chatArea: { flex: 1, display: 'flex', flexDirection: 'column' },
-  chatHeader: { padding: '16px 24px', background: 'white', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  chatTitle: { margin: 0, color: '#333' },
+  chatHeader: { padding: '18px 24px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '22px 22px 0 0', boxShadow: 'var(--shadow-soft)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  chatTitle: { margin: 0, color: 'var(--text-primary)' },
+  headerActions: { display: 'flex', alignItems: 'center', gap: '12px' },
   status: { fontSize: '14px' },
-  messages: { flex: 1, padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px' },
-  empty: { textAlign: 'center', color: '#9ca3af', marginTop: '48px' },
+  messages: { flex: 1, padding: '24px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', background: 'var(--glass-bg-soft)', borderLeft: '1px solid var(--border-color)', borderRight: '1px solid var(--border-color)' },
+  empty: { textAlign: 'center', color: 'var(--text-muted)', marginTop: '48px' },
   msgRow: { display: 'flex' },
-  msgBubble: { maxWidth: '60%', padding: '12px 16px', borderRadius: '12px', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' },
-  senderName: { margin: '0 0 4px 0', fontSize: '11px', fontWeight: 'bold', color: '#4f46e5' },
+  msgBubble: { maxWidth: '62%', padding: '13px 16px', borderRadius: '18px', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-soft)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' },
+  senderName: { margin: '0 0 4px 0', fontSize: '11px', fontWeight: 'bold', color: 'var(--primary-accent)' },
   msgContent: { margin: 0, fontSize: '14px' },
   msgTime: { margin: '4px 0 0 0', fontSize: '10px', textAlign: 'right' },
-  inputArea: { padding: '16px 24px', background: 'white', display: 'flex', gap: '12px', boxShadow: '0 -2px 8px rgba(0,0,0,0.1)' },
-  input: { flex: 1, padding: '12px', borderRadius: '8px', border: '1px solid #ddd', fontSize: '14px' },
-  sendBtn: { padding: '12px 24px', background: '#4f46e5', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '14px' },
+  inputArea: { padding: '16px 24px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '0 0 22px 22px', display: 'flex', gap: '12px', boxShadow: 'var(--shadow-soft)' },
+  input: { flex: 1, padding: '13px 15px', borderRadius: '16px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)', fontSize: '14px' },
+  sendBtn: { padding: '12px 24px', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', border: '1px solid var(--border-color)', borderRadius: '16px', cursor: 'pointer', fontSize: '14px', fontWeight: 700 },
 };

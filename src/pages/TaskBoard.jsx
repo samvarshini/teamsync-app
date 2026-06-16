@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import { getTasksByTeam, createTask, updateTaskStatus, deleteTask } from '../services/taskService';
 import { getMyTeams } from '../services/teamService';
+import ThemeToggle from '../components/ThemeToggle';
 
 const COLUMNS = [
-  { id: 'todo', label: '📋 To Do', color: '#6b7280' },
-  { id: 'inprogress', label: '⚡ In Progress', color: '#f59e0b' },
-  { id: 'done', label: '✅ Done', color: '#10b981' },
+  { id: 'todo', label: '📋 To Do', color: 'var(--text-secondary)' },
+  { id: 'inprogress', label: '⚡ In Progress', color: 'var(--warning)' },
+  { id: 'done', label: '✅ Done', color: 'var(--success)' },
 ];
 
 export default function TaskBoard() {
@@ -80,13 +81,14 @@ export default function TaskBoard() {
 
   const getTasksByStatus = (status) => tasks.filter((t) => t.status === status);
 
-  const priorityColor = (p) => p === 'high' ? '#ef4444' : p === 'medium' ? '#f59e0b' : '#10b981';
+  const priorityColor = (p) => p === 'high' ? 'var(--error)' : p === 'medium' ? 'var(--warning)' : 'var(--success)';
 
   return (
     <div style={styles.container}>
       <div style={styles.header}>
         <h2 style={styles.title}>Task Board</h2>
         <div style={styles.headerRight}>
+          <ThemeToggle />
           <select
             style={styles.select}
             value={selectedTeam?.id || ''}
@@ -195,26 +197,26 @@ export default function TaskBoard() {
 }
 
 const styles = {
-  container: { padding: '24px', background: '#f0f2f5', minHeight: '100vh' },
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' },
-  title: { color: '#333', margin: 0 },
-  headerRight: { display: 'flex', gap: '12px', alignItems: 'center' },
-  select: { padding: '10px', borderRadius: '8px', border: '1px solid #ddd', fontSize: '14px' },
-  btnPrimary: { padding: '10px 20px', background: '#4f46e5', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' },
-  btnBack: { padding: '10px 20px', background: '#6b7280', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' },
-  formCard: { background: 'white', padding: '24px', borderRadius: '12px', marginBottom: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)' },
-  input: { width: '100%', padding: '12px', marginBottom: '12px', borderRadius: '8px', border: '1px solid #ddd', fontSize: '14px', boxSizing: 'border-box' },
-  board: { display: 'flex', gap: '24px', alignItems: 'flex-start' },
-  column: { flex: 1, background: 'white', borderRadius: '12px', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', minHeight: '400px' },
-  colHeader: { padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold', color: '#333' },
-  badge: { background: '#f0f2f5', padding: '2px 8px', borderRadius: '12px', fontSize: '12px' },
-  colBody: { padding: '8px', minHeight: '300px' },
-  taskCard: { background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: '8px', padding: '12px', marginBottom: '8px', cursor: 'grab' },
+  container: { padding: '32px', background: 'transparent', minHeight: '100vh' },
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '18px', marginBottom: '24px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '22px', padding: '18px 20px', boxShadow: 'var(--shadow-soft)' },
+  title: { color: 'var(--text-primary)', margin: 0, fontSize: '28px' },
+  headerRight: { display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' },
+  select: { padding: '11px 14px', borderRadius: '14px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)', fontSize: '14px' },
+  btnPrimary: { padding: '11px 20px', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', border: '1px solid var(--border-color)', borderRadius: '14px', cursor: 'pointer', fontWeight: 700, boxShadow: '0 14px 30px rgba(var(--primary-accent-rgb),0.24)' },
+  btnBack: { padding: '11px 20px', background: 'var(--glass-bg-soft)', color: 'var(--text-secondary)', border: '1px solid var(--border-color)', borderRadius: '14px', cursor: 'pointer', fontWeight: 700 },
+  formCard: { background: 'var(--glass-bg)', color: 'var(--text-primary)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', padding: '24px', borderRadius: '22px', border: '1px solid var(--border-color)', marginBottom: '24px', boxShadow: 'var(--shadow-soft)' },
+  input: { width: '100%', padding: '13px 15px', marginBottom: '12px', borderRadius: '14px', border: '1px solid var(--border-color)', background: 'var(--input-bg)', color: 'var(--text-primary)', fontSize: '14px', boxSizing: 'border-box' },
+  board: { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(240px, 1fr))', gap: '24px', alignItems: 'flex-start', overflowX: 'auto', paddingBottom: '8px' },
+  column: { background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '22px', boxShadow: 'var(--shadow-soft)', minHeight: '400px', minWidth: '240px', overflow: 'hidden' },
+  colHeader: { padding: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold', color: 'var(--text-primary)', background: 'var(--hover-bg)' },
+  badge: { background: 'var(--glass-bg-soft)', color: 'var(--primary-accent)', border: '1px solid var(--border-color)', padding: '3px 9px', borderRadius: '999px', fontSize: '12px' },
+  colBody: { padding: '10px', minHeight: '300px' },
+  taskCard: { background: 'var(--glass-bg-strong)', border: '1px solid var(--border-color)', borderRadius: '18px', padding: '14px', marginBottom: '10px', cursor: 'grab', boxShadow: 'var(--shadow-soft)' },
   taskTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' },
-  priority: { color: 'white', fontSize: '10px', padding: '2px 8px', borderRadius: '12px', textTransform: 'uppercase' },
-  deleteBtn: { background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '14px' },
-  taskTitle: { margin: '0 0 4px 0', fontWeight: 'bold', color: '#333', fontSize: '14px' },
-  taskDesc: { margin: '0 0 4px 0', color: '#666', fontSize: '12px' },
-  deadline: { margin: 0, color: '#9ca3af', fontSize: '11px' },
-  empty: { color: '#666', textAlign: 'center', marginTop: '48px' },
+  priority: { color: 'white', fontSize: '10px', padding: '4px 9px', borderRadius: '999px', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '0.3px' },
+  deleteBtn: { background: 'var(--hover-bg)', border: '1px solid var(--border-color)', borderRadius: '999px', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '13px', width: '26px', height: '26px' },
+  taskTitle: { margin: '0 0 4px 0', fontWeight: 'bold', color: 'var(--text-primary)', fontSize: '14px' },
+  taskDesc: { margin: '0 0 4px 0', color: 'var(--text-secondary)', fontSize: '12px' },
+  deadline: { margin: 0, color: 'var(--text-muted)', fontSize: '11px' },
+  empty: { color: 'var(--text-secondary)', textAlign: 'center', marginTop: '48px' },
 };
