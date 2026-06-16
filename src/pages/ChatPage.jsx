@@ -14,7 +14,10 @@ const formatMessageTime = (sentAt) => {
     : sentAt;
   const date = new Date(timestamp);
 
-  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString();
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 };
 
 export default function ChatPage() {
