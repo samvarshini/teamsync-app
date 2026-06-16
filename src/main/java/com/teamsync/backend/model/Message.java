@@ -21,6 +21,9 @@ public class Message {
 
     private String content;
 
+    @Column(name = "client_message_id")
+    private String clientMessageId;
+
     @Column(name = "message_type")
     private String messageType = "TEXT";
 
@@ -33,6 +36,19 @@ public class Message {
 
     @Column(name = "media_mime_type")
     private String mediaMimeType;
+
+    @Lob
+    @Column(name = "attachment_data_url", columnDefinition = "TEXT")
+    private String attachmentDataUrl;
+
+    @Column(name = "attachment_file_name")
+    private String attachmentFileName;
+
+    @Column(name = "attachment_file_size")
+    private Long attachmentFileSize;
+
+    @Column(name = "delivery_status")
+    private String deliveryStatus = "SENT";
 
     @Column(name = "call_id")
     private String callId;

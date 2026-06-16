@@ -35,15 +35,25 @@ public class MessageController {
     public void sendMessage(@Payload ChatMessage chatMessage) {
         String messageType = chatMessage.getMessageType() == null ? "TEXT" : chatMessage.getMessageType();
 
+        if (chatMessage.getClientMessageId() != null
+                && messageRepository.existsByClientMessageId(chatMessage.getClientMessageId())) {
+            return;
+        }
+
         // Save message
         Message message = new Message();
         message.setTeamId(chatMessage.getTeamId());
         message.setSenderId(chatMessage.getSenderId());
         message.setContent(chatMessage.getContent());
+        message.setClientMessageId(chatMessage.getClientMessageId());
         message.setMessageType(messageType);
         message.setAudioDataUrl(chatMessage.getAudioDataUrl());
         message.setAudioDurationSeconds(chatMessage.getAudioDurationSeconds());
         message.setMediaMimeType(chatMessage.getMediaMimeType());
+        message.setAttachmentDataUrl(chatMessage.getAttachmentDataUrl());
+        message.setAttachmentFileName(chatMessage.getAttachmentFileName());
+        message.setAttachmentFileSize(chatMessage.getAttachmentFileSize());
+        message.setDeliveryStatus("SENT");
         message.setCallId(chatMessage.getCallId());
         message.setCallStatus(chatMessage.getCallStatus());
         message.setCallMediaType(chatMessage.getCallMediaType());
@@ -52,8 +62,10 @@ public class MessageController {
         message.setSentAt(LocalDateTime.now());
         messageRepository.save(message);
 
+        chatMessage.setId(message.getId());
         chatMessage.setSentAt(message.getSentAt().toString());
         chatMessage.setMessageType(messageType);
+        chatMessage.setDeliveryStatus(message.getDeliveryStatus());
 
         // Broadcast to team
         messagingTemplate.convertAndSend(
@@ -79,6 +91,9 @@ public class MessageController {
             if ("VOICE".equalsIgnoreCase(messageType)) {
                 notification.setMessage("🎙 " + chatMessage.getSenderName() +
                     " sent you a voice message in " + teamName);
+            } else if ("ATTACHMENT".equalsIgnoreCase(messageType)) {
+                notification.setMessage("📎 " + chatMessage.getSenderName() +
+                    " sent an attachment in " + teamName);
             } else {
                 String content = chatMessage.getContent() == null ? "" : chatMessage.getContent();
                 notification.setMessage("💬 " + chatMessage.getSenderName() +
@@ -94,6 +109,40 @@ public class MessageController {
                 notification
             );
         }
+    }
+
+    @MessageMapping("/chat-status/{teamId}")
+    public void updateMessageStatus(@Payload ChatMessage chatMessage) {
+        if (chatMessage.getId() == null || chatMessage.getDeliveryStatus() == null) {
+            return;
+        }
+
+        messageRepository.findById(chatMessage.getId()).ifPresent(message -> {
+            if (!message.getTeamId().equals(chatMessage.getTeamId())
+                    || message.getSenderId().equals(chatMessage.getSenderId())) {
+                return;
+            }
+
+            String currentStatus = message.getDeliveryStatus() == null ? "SENT" : message.getDeliveryStatus();
+            String nextStatus = normalizeStatus(chatMessage.getDeliveryStatus());
+            if (statusRank(nextStatus) <= statusRank(currentStatus)) {
+                return;
+            }
+
+            message.setDeliveryStatus(nextStatus);
+            messageRepository.save(message);
+
+            ChatMessage statusMessage = new ChatMessage();
+            statusMessage.setId(message.getId());
+            statusMessage.setTeamId(message.getTeamId());
+            statusMessage.setSenderId(chatMessage.getSenderId());
+            statusMessage.setDeliveryStatus(nextStatus);
+
+            messagingTemplate.convertAndSend(
+                    "/topic/team/" + chatMessage.getTeamId() + "/status",
+                    statusMessage
+            );
+        });
     }
 
     @MessageMapping("/call/{teamId}")
@@ -252,15 +301,21 @@ public class MessageController {
     private ChatMessage toChatMessage(Message message) {
         ChatMessage chatMessage = new ChatMessage();
         chatMessage.setTeamId(message.getTeamId());
+        chatMessage.setId(message.getId());
         chatMessage.setSenderId(message.getSenderId());
         chatMessage.setSenderName(userRepository.findById(message.getSenderId())
                 .map(user -> user.getName())
                 .orElse(""));
         chatMessage.setContent(message.getContent());
+        chatMessage.setClientMessageId(message.getClientMessageId());
         chatMessage.setMessageType(message.getMessageType() == null ? "TEXT" : message.getMessageType());
         chatMessage.setAudioDataUrl(message.getAudioDataUrl());
         chatMessage.setAudioDurationSeconds(message.getAudioDurationSeconds());
         chatMessage.setMediaMimeType(message.getMediaMimeType());
+        chatMessage.setAttachmentDataUrl(message.getAttachmentDataUrl());
+        chatMessage.setAttachmentFileName(message.getAttachmentFileName());
+        chatMessage.setAttachmentFileSize(message.getAttachmentFileSize());
+        chatMessage.setDeliveryStatus(message.getDeliveryStatus() == null ? "SENT" : message.getDeliveryStatus());
         chatMessage.setCallId(message.getCallId());
         chatMessage.setCallStatus(message.getCallStatus());
         chatMessage.setCallMediaType(message.getCallMediaType());
@@ -268,6 +323,23 @@ public class MessageController {
         chatMessage.setCallDurationSeconds(message.getCallDurationSeconds());
         chatMessage.setSentAt(message.getSentAt().toString());
         return chatMessage;
+    }
+
+    private String normalizeStatus(String status) {
+        String normalized = status.toUpperCase();
+        return switch (normalized) {
+            case "DELIVERED", "SEEN" -> normalized;
+            default -> "SENT";
+        };
+    }
+
+    private int statusRank(String status) {
+        return switch (status) {
+            case "SEEN" -> 3;
+            case "DELIVERED" -> 2;
+            case "SENT" -> 1;
+            default -> 0;
+        };
     }
 
     @GetMapping("/api/messages/{teamId}")
