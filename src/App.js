@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import TeamPage from './pages/TeamPage';
 import TaskBoard from './pages/TaskBoard';
 import ChatPage from './pages/ChatPage';
+import GlobalNotificationListener from './components/GlobalNotificationListener';
 
 function PrivateRoute({ children }) {
   const { user } = useAuth();
@@ -16,6 +17,7 @@ function App() {
   return (
     <AuthProvider>
       <BrowserRouter>
+        <GlobalNotificationListener />
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
