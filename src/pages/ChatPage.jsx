@@ -6,6 +6,17 @@ import { getMyTeams } from '../services/teamService';
 import API from '../services/api';
 import ThemeToggle from '../components/ThemeToggle';
 
+const formatMessageTime = (sentAt) => {
+  if (!sentAt) return '';
+
+  const timestamp = typeof sentAt === 'string' && !/(Z|[+-]\d{2}:?\d{2})$/.test(sentAt)
+    ? `${sentAt}Z`
+    : sentAt;
+  const date = new Date(timestamp);
+
+  return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString();
+};
+
 export default function ChatPage() {
   const [teams, setTeams] = useState([]);
   const [selectedTeam, setSelectedTeam] = useState(null);
@@ -153,7 +164,7 @@ export default function ChatPage() {
                   {!isMe && <p style={styles.senderName}>{msg.senderName}</p>}
                   <p style={styles.msgContent}>{msg.content}</p>
                   <p style={{ ...styles.msgTime, color: isMe ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)' }}>
-                    {msg.sentAt ? new Date(msg.sentAt).toLocaleTimeString() : ''}
+                    {formatMessageTime(msg.sentAt)}
                   </p>
                 </div>
               </div>
