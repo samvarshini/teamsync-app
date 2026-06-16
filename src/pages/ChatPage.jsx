@@ -16,12 +16,13 @@ import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import PanToolIcon from '@mui/icons-material/PanTool';
 import CheckIcon from '@mui/icons-material/Check';
 import BlockIcon from '@mui/icons-material/Block';
-import { getMyTeams } from '../services/teamService';
+import { getMyTeams, getTeamMembers } from '../services/teamService';
 import API from '../services/api';
 import ThemeToggle from '../components/ThemeToggle';
 
 const WS_URL = 'https://teamsync-app-6guk.onrender.com/ws';
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+const CALL_TIMEOUT_MS = 30000;
 
 const formatMessageTime = (sentAt) => {
   if (!sentAt) return '';
@@ -42,6 +43,42 @@ const formatDuration = (seconds = 0) => {
   const mins = Math.floor(safeSeconds / 60);
   const secs = String(safeSeconds % 60).padStart(2, '0');
   return `${mins}:${secs}`;
+};
+
+const formatCallDuration = (seconds = 0) => {
+  const safeSeconds = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const mins = Math.floor((safeSeconds % 3600) / 60);
+  const secs = String(safeSeconds % 60).padStart(2, '0');
+
+  if (hours > 0) return `${hours}h ${String(mins).padStart(2, '0')}m`;
+  return `${mins}m ${secs}s`;
+};
+
+const createLoopTone = (frequency) => {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return null;
+
+  const context = new AudioContextClass();
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.frequency.value = frequency;
+  oscillator.type = 'sine';
+  gain.gain.value = 0.045;
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+
+  return {
+    start: () => {
+      context.resume?.();
+      oscillator.start();
+    },
+    stop: () => {
+      gain.gain.value = 0;
+      oscillator.stop();
+      context.close?.();
+    },
+  };
 };
 
 const readBlobAsDataUrl = (blob) => new Promise((resolve, reject) => {
@@ -124,12 +161,38 @@ function VideoTile({ stream, name, muted, isScreen, active }) {
   );
 }
 
+function CallBadge({ msg, isMe }) {
+  const mediaType = msg.callMediaType || 'video';
+  const icon = mediaType === 'voice' ? '📞' : '📹';
+
+  let title = 'Call event';
+  if (msg.callStatus === 'ANSWERED') {
+    title = `${isMe ? 'Outgoing' : 'Incoming'} ${mediaType} call`;
+  } else if (msg.callStatus === 'MISSED') {
+    title = `Missed ${mediaType} call`;
+  } else if (msg.callStatus === 'DECLINED') {
+    title = 'Call declined';
+  } else if (msg.callStatus === 'CANCELLED') {
+    title = 'Call cancelled';
+  }
+
+  return (
+    <div style={styles.callBadgeContent}>
+      <p style={styles.msgContent}>{icon} {title}</p>
+      {msg.callStatus === 'ANSWERED' && (
+        <p style={styles.callDuration}>Duration: {formatCallDuration(msg.callDurationSeconds)}</p>
+      )}
+    </div>
+  );
+}
+
 export default function ChatPage() {
   const [teams, setTeams] = useState([]);
   const [selectedTeam, setSelectedTeam] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [connected, setConnected] = useState(false);
+  const [memberNames, setMemberNames] = useState({});
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [voiceDraft, setVoiceDraft] = useState(null);
@@ -154,8 +217,20 @@ export default function ChatPage() {
   const screenStreamRef = useRef(null);
   const handleSignalRef = useRef(null);
   const processedSignalsRef = useRef(new Set());
+  const callStartedAtRef = useRef(null);
+  const callInitiatorIdRef = useRef(null);
+  const callInitiatorNameRef = useRef('');
+  const callTimeoutRef = useRef(null);
+  const callFinalizedRef = useRef(false);
+  const incomingToneRef = useRef(null);
+  const outgoingToneRef = useRef(null);
   const navigate = useNavigate();
   const user = useMemo(() => JSON.parse(localStorage.getItem('user')), []);
+
+  const getDisplayName = useCallback((userId, fallback = '') => {
+    if (userId === user?.id) return user.name;
+    return memberNames[userId] || fallback || '';
+  }, [memberNames, user]);
 
   const publishSignal = useCallback((signal) => {
     if (!clientRef.current?.connected || !selectedTeam || !user) return;
@@ -175,6 +250,75 @@ export default function ChatPage() {
   const stopMediaStream = useCallback((stream) => {
     stream?.getTracks().forEach((track) => track.stop());
   }, []);
+
+  const stopIncomingTone = useCallback(() => {
+    incomingToneRef.current?.stop();
+    incomingToneRef.current = null;
+  }, []);
+
+  const stopOutgoingTone = useCallback(() => {
+    outgoingToneRef.current?.stop();
+    outgoingToneRef.current = null;
+  }, []);
+
+  const startIncomingTone = useCallback(() => {
+    if (incomingToneRef.current) return;
+    const tone = createLoopTone(660);
+    if (!tone) return;
+    incomingToneRef.current = tone;
+    tone.start();
+  }, []);
+
+  const startOutgoingTone = useCallback(() => {
+    if (outgoingToneRef.current) return;
+    const tone = createLoopTone(440);
+    if (!tone) return;
+    outgoingToneRef.current = tone;
+    tone.start();
+  }, []);
+
+  const clearCallTimeout = useCallback(() => {
+    if (callTimeoutRef.current) {
+      clearTimeout(callTimeoutRef.current);
+      callTimeoutRef.current = null;
+    }
+  }, []);
+
+  const stopCallSounds = useCallback(() => {
+    stopIncomingTone();
+    stopOutgoingTone();
+  }, [stopIncomingTone, stopOutgoingTone]);
+
+  const resetCallRefs = useCallback(() => {
+    clearCallTimeout();
+    stopCallSounds();
+    callStartedAtRef.current = null;
+    callInitiatorIdRef.current = null;
+    callInitiatorNameRef.current = '';
+    callFinalizedRef.current = false;
+  }, [clearCallTimeout, stopCallSounds]);
+
+  const getCallDurationSeconds = useCallback(() => {
+    if (!callStartedAtRef.current) return 0;
+    return Math.max(0, Math.round((Date.now() - callStartedAtRef.current) / 1000));
+  }, []);
+
+  const publishFinalCallStatus = useCallback((type, overrides = {}) => {
+    const finalCallId = overrides.callId || callId;
+    if (callFinalizedRef.current || !finalCallId) return;
+    callFinalizedRef.current = true;
+
+    const statusIncludesDuration = type === 'CALL_ENDED';
+    publishSignal({
+      type,
+      callId: finalCallId,
+      callMediaType: 'video',
+      callInitiatorId: callInitiatorIdRef.current || user.id,
+      senderName: callInitiatorNameRef.current || user.name,
+      callDurationSeconds: statusIncludesDuration ? getCallDurationSeconds() : null,
+      ...overrides,
+    });
+  }, [callId, getCallDurationSeconds, publishSignal, user]);
 
   const cleanupCall = useCallback((notify = true) => {
     if (notify && callState !== 'idle') {
@@ -197,7 +341,8 @@ export default function ChatPage() {
     setCameraOff(false);
     setControlRequest(null);
     setControlStatus('idle');
-  }, [callState, publishSignal, stopMediaStream]);
+    resetCallRefs();
+  }, [callState, publishSignal, resetCallRefs, stopMediaStream]);
 
   const ensureLocalStream = useCallback(async () => {
     if (localStreamRef.current) return localStreamRef.current;
@@ -277,16 +422,34 @@ export default function ChatPage() {
         if (callState === 'idle') {
           setIncomingCall(signal);
           setCallId(signal.callId);
+          callInitiatorIdRef.current = signal.callInitiatorId || signal.senderId;
+          callInitiatorNameRef.current = signal.senderName || getDisplayName(signal.senderId);
+          callFinalizedRef.current = false;
           setCallState('ringing');
+          startIncomingTone();
+          clearCallTimeout();
+          callTimeoutRef.current = setTimeout(() => {
+            publishFinalCallStatus('CALL_MISSED', {
+              callId: signal.callId,
+              callInitiatorId: signal.callInitiatorId || signal.senderId,
+              senderName: signal.senderName || getDisplayName(signal.senderId),
+              targetUserId: user.id,
+            });
+            cleanupCall(false);
+          }, CALL_TIMEOUT_MS);
         }
         break;
       case 'CALL_ACCEPTED':
       case 'JOIN_CALL':
         if (callState !== 'idle') {
+          clearCallTimeout();
+          stopCallSounds();
+          callStartedAtRef.current = Date.now();
+          setCallState('active');
           setParticipants((prev) => ({
             ...prev,
             [signal.senderId]: {
-              name: signal.senderName || signal.participantName || 'Teammate',
+              name: getDisplayName(signal.senderId, signal.senderName || signal.participantName),
               active: true,
             },
           }));
@@ -296,7 +459,12 @@ export default function ChatPage() {
       case 'CALL_REJECTED':
         if (signal.targetUserId === user.id || !signal.targetUserId) {
           setIncomingCall(null);
+          cleanupCall(false);
         }
+        break;
+      case 'CALL_CANCELLED':
+      case 'CALL_MISSED':
+        cleanupCall(false);
         break;
       case 'WEBRTC_OFFER': {
         const peer = peersRef.current[signal.senderId] || await createPeer(signal.senderId, false);
@@ -312,7 +480,7 @@ export default function ChatPage() {
           ...prev,
           [signal.senderId]: {
             ...prev[signal.senderId],
-            name: signal.senderName || prev[signal.senderId]?.name || 'Teammate',
+            name: getDisplayName(signal.senderId, signal.senderName || prev[signal.senderId]?.name),
             active: true,
           },
         }));
@@ -333,7 +501,7 @@ export default function ChatPage() {
           ...prev,
           [signal.senderId]: {
             ...prev[signal.senderId],
-            name: signal.senderName || 'Teammate',
+            name: getDisplayName(signal.senderId, signal.senderName),
             screenSharing: true,
             active: true,
           },
@@ -367,7 +535,7 @@ export default function ChatPage() {
       default:
         break;
     }
-  }, [callState, cleanupCall, createPeer, publishSignal, selectedTeam?.id, user]);
+  }, [callState, cleanupCall, clearCallTimeout, createPeer, getDisplayName, publishFinalCallStatus, publishSignal, selectedTeam?.id, startIncomingTone, stopCallSounds, user]);
 
   useEffect(() => {
     handleSignalRef.current = handleSignal;
@@ -379,6 +547,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (selectedTeam) {
+      loadTeamMembers(selectedTeam.id);
       loadMessages(selectedTeam.id);
       connectWebSocket(selectedTeam.id);
     }
@@ -420,16 +589,34 @@ export default function ChatPage() {
       setMessages(res.data.map(m => ({
         teamId: m.teamId,
         senderId: m.senderId,
-        senderName: m.senderId === user.id ? user.name : 'Teammate',
+        senderName: m.senderName || getDisplayName(m.senderId),
         content: m.content,
         messageType: m.messageType || 'TEXT',
         audioDataUrl: m.audioDataUrl,
         audioDurationSeconds: m.audioDurationSeconds,
         mediaMimeType: m.mediaMimeType,
+        callId: m.callId,
+        callStatus: m.callStatus,
+        callMediaType: m.callMediaType,
+        callInitiatorId: m.callInitiatorId,
+        callDurationSeconds: m.callDurationSeconds,
         sentAt: m.sentAt,
       })));
     } catch (err) {
       console.error('Failed to load messages');
+    }
+  };
+
+  const loadTeamMembers = async (teamId) => {
+    try {
+      const res = await getTeamMembers(teamId);
+      const names = {};
+      res.data.forEach((member) => {
+        if (member.userId && member.name) names[member.userId] = member.name;
+      });
+      setMemberNames(names);
+    } catch (err) {
+      console.error('Failed to load team members');
     }
   };
 
@@ -445,6 +632,7 @@ export default function ChatPage() {
           const msg = JSON.parse(message.body);
           setMessages((prev) => [...prev, {
             ...msg,
+            senderName: msg.senderName || getDisplayName(msg.senderId),
             messageType: msg.messageType || 'TEXT',
           }]);
         });
@@ -558,35 +746,65 @@ export default function ChatPage() {
     await ensureLocalStream();
     const nextCallId = `call-${selectedTeam.id}-${Date.now()}`;
     setCallId(nextCallId);
-    setCallState('active');
+    callInitiatorIdRef.current = user.id;
+    callInitiatorNameRef.current = user.name;
+    callFinalizedRef.current = false;
+    setCallState('outgoing');
+    startOutgoingTone();
     publishSignal({
       type: 'CALL_INVITE',
       callId: nextCallId,
+      callMediaType: 'video',
+      callInitiatorId: user.id,
     });
+    clearCallTimeout();
+    callTimeoutRef.current = setTimeout(() => {
+      publishFinalCallStatus('CALL_MISSED', {
+        callId: nextCallId,
+        callInitiatorId: user.id,
+        senderName: user.name,
+      });
+      cleanupCall(false);
+    }, CALL_TIMEOUT_MS);
   };
 
   const acceptCall = async () => {
     await ensureLocalStream();
+    clearCallTimeout();
+    stopCallSounds();
+    callStartedAtRef.current = Date.now();
+    callInitiatorIdRef.current = incomingCall.callInitiatorId || incomingCall.senderId;
+    callInitiatorNameRef.current = incomingCall.senderName || getDisplayName(incomingCall.senderId);
     setCallState('active');
     publishSignal({
       type: 'CALL_ACCEPTED',
       callId: incomingCall.callId,
       targetUserId: incomingCall.senderId,
+      callMediaType: incomingCall.callMediaType || 'video',
+      callInitiatorId: incomingCall.callInitiatorId || incomingCall.senderId,
     });
     setIncomingCall(null);
   };
 
   const rejectCall = () => {
-    publishSignal({
-      type: 'CALL_REJECTED',
+    publishFinalCallStatus('CALL_REJECTED', {
       callId: incomingCall?.callId,
+      callInitiatorId: incomingCall?.callInitiatorId || incomingCall?.senderId,
+      senderName: incomingCall?.senderName,
       targetUserId: incomingCall?.senderId,
     });
     cleanupCall(false);
   };
 
   const endCall = () => {
-    publishSignal({ type: 'END_CALL' });
+    if (callState === 'active') {
+      publishFinalCallStatus('CALL_ENDED');
+      publishSignal({ type: 'END_CALL' });
+    } else if (callState === 'outgoing') {
+      publishFinalCallStatus('CALL_CANCELLED');
+    } else {
+      publishSignal({ type: 'END_CALL' });
+    }
     cleanupCall(false);
   };
 
@@ -710,9 +928,11 @@ export default function ChatPage() {
             return (
               <div key={`${msg.sentAt || i}-${i}`} style={{ ...styles.msgRow, justifyContent: isMe ? 'flex-end' : 'flex-start' }}>
                 <div style={{ ...styles.msgBubble, background: isMe ? 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))' : 'var(--glass-bg)', color: isMe ? 'white' : 'var(--text-primary)' }}>
-                  {!isMe && <p style={styles.senderName}>{msg.senderName}</p>}
+                  {!isMe && msg.messageType !== 'CALL' && <p style={styles.senderName}>{msg.senderName}</p>}
                   {msg.messageType === 'VOICE' ? (
                     <VoiceMessage msg={msg} isMe={isMe} />
+                  ) : msg.messageType === 'CALL' ? (
+                    <CallBadge msg={msg} isMe={msg.callInitiatorId === user.id || isMe} />
                   ) : (
                     <p style={styles.msgContent}>{msg.content}</p>
                   )}
@@ -779,7 +999,7 @@ export default function ChatPage() {
         </div>
       )}
 
-      {callState === 'active' && (
+      {(callState === 'active' || callState === 'outgoing') && (
         <div style={styles.callPanel}>
           <div style={styles.videoGrid}>
             <VideoTile stream={localStream} name={`${user.name} (you)`} muted active />
@@ -851,6 +1071,8 @@ const styles = {
   msgBubble: { maxWidth: '62%', padding: '13px 16px', borderRadius: '18px', border: '1px solid var(--border-color)', boxShadow: 'var(--shadow-soft)', backdropFilter: 'blur(16px)', WebkitBackdropFilter: 'blur(16px)' },
   senderName: { margin: '0 0 4px 0', fontSize: '11px', fontWeight: 'bold', color: 'var(--primary-accent)' },
   msgContent: { margin: 0, fontSize: '14px', overflowWrap: 'anywhere' },
+  callBadgeContent: { display: 'flex', flexDirection: 'column', gap: '4px' },
+  callDuration: { margin: 0, fontSize: '12px', opacity: 0.8 },
   msgTime: { margin: '4px 0 0 0', fontSize: '10px', textAlign: 'right' },
   voiceMessage: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: '230px' },
   iconButton: { width: '34px', height: '34px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'var(--glass-bg-soft)', color: 'var(--text-primary)', display: 'grid', placeItems: 'center', cursor: 'pointer', flex: '0 0 auto' },
