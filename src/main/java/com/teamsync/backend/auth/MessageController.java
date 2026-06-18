@@ -23,6 +23,8 @@ import java.util.Map;
 @CrossOrigin(origins = {"http://localhost:3000", "https://n-six-tan.vercel.app", "https://*.vercel.app"})
 public class MessageController {
 
+    private static final int MAX_MEDIA_DATA_URL_CHARS = 7_500_000;
+
     private final MessageRepository messageRepository;
     private final NotificationRepository notificationRepository;
     private final TeamMemberRepository teamMemberRepository;
@@ -35,8 +37,19 @@ public class MessageController {
     public void sendMessage(@Payload ChatMessage chatMessage) {
         String messageType = chatMessage.getMessageType() == null ? "TEXT" : chatMessage.getMessageType();
 
-        if (chatMessage.getClientMessageId() != null
-                && messageRepository.existsByClientMessageId(chatMessage.getClientMessageId())) {
+        if (chatMessage.getClientMessageId() != null) {
+            var existing = messageRepository.findByClientMessageId(chatMessage.getClientMessageId());
+            if (existing.isPresent()) {
+                messagingTemplate.convertAndSend(
+                        "/topic/team/" + chatMessage.getTeamId(),
+                        toChatMessage(existing.get())
+                );
+                return;
+            }
+        }
+
+        if (!isValidMediaPayload(chatMessage, messageType)) {
+            sendDeliveryStatus(chatMessage.getTeamId(), null, chatMessage.getClientMessageId(), "FAILED");
             return;
         }
 
@@ -111,6 +124,44 @@ public class MessageController {
         }
     }
 
+    private boolean isValidMediaPayload(ChatMessage chatMessage, String messageType) {
+        if ("VOICE".equalsIgnoreCase(messageType)) {
+            return isDataUrl(chatMessage.getAudioDataUrl())
+                    && isWithinMediaLimit(chatMessage.getAudioDataUrl());
+        }
+
+        if ("ATTACHMENT".equalsIgnoreCase(messageType)) {
+            return isDataUrl(chatMessage.getAttachmentDataUrl())
+                    && isWithinMediaLimit(chatMessage.getAttachmentDataUrl())
+                    && chatMessage.getAttachmentFileName() != null
+                    && chatMessage.getAttachmentFileSize() != null
+                    && chatMessage.getAttachmentFileSize() > 0;
+        }
+
+        return true;
+    }
+
+    private boolean isDataUrl(String value) {
+        return value != null && value.startsWith("data:") && value.contains(";base64,");
+    }
+
+    private boolean isWithinMediaLimit(String value) {
+        return value != null && value.length() <= MAX_MEDIA_DATA_URL_CHARS;
+    }
+
+    private void sendDeliveryStatus(Long teamId, Long messageId, String clientMessageId, String deliveryStatus) {
+        ChatMessage statusMessage = new ChatMessage();
+        statusMessage.setId(messageId);
+        statusMessage.setTeamId(teamId);
+        statusMessage.setClientMessageId(clientMessageId);
+        statusMessage.setDeliveryStatus(deliveryStatus);
+
+        messagingTemplate.convertAndSend(
+                "/topic/team/" + teamId + "/status",
+                statusMessage
+        );
+    }
+
     @MessageMapping("/chat-status/{teamId}")
     public void updateMessageStatus(@Payload ChatMessage chatMessage) {
         if (chatMessage.getId() == null || chatMessage.getDeliveryStatus() == null) {
@@ -132,16 +183,7 @@ public class MessageController {
             message.setDeliveryStatus(nextStatus);
             messageRepository.save(message);
 
-            ChatMessage statusMessage = new ChatMessage();
-            statusMessage.setId(message.getId());
-            statusMessage.setTeamId(message.getTeamId());
-            statusMessage.setSenderId(chatMessage.getSenderId());
-            statusMessage.setDeliveryStatus(nextStatus);
-
-            messagingTemplate.convertAndSend(
-                    "/topic/team/" + chatMessage.getTeamId() + "/status",
-                    statusMessage
-            );
+            sendDeliveryStatus(chatMessage.getTeamId(), message.getId(), message.getClientMessageId(), nextStatus);
         });
     }
 
@@ -328,7 +370,7 @@ public class MessageController {
     private String normalizeStatus(String status) {
         String normalized = status.toUpperCase();
         return switch (normalized) {
-            case "DELIVERED", "SEEN" -> normalized;
+            case "DELIVERED", "SEEN", "FAILED" -> normalized;
             default -> "SENT";
         };
     }
@@ -338,6 +380,7 @@ public class MessageController {
             case "SEEN" -> 3;
             case "DELIVERED" -> 2;
             case "SENT" -> 1;
+            case "FAILED" -> -1;
             default -> 0;
         };
     }
