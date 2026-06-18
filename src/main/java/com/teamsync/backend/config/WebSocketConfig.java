@@ -2,6 +2,8 @@ package com.teamsync.backend.config;
 
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
+import org.springframework.context.annotation.Bean;
+import org.springframework.web.socket.server.standard.ServletServerContainerFactoryBean;
 import org.springframework.web.socket.config.annotation.WebSocketTransportRegistration;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
@@ -11,6 +13,8 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 @EnableWebSocketMessageBroker
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
+    private static final int MEDIA_MESSAGE_LIMIT_BYTES = 12 * 1024 * 1024;
+
     @Override
     public void configureMessageBroker(MessageBrokerRegistry config) {
         config.enableSimpleBroker("/topic");
@@ -19,9 +23,17 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     @Override
     public void configureWebSocketTransport(WebSocketTransportRegistration registry) {
-        registry.setMessageSizeLimit(12 * 1024 * 1024);
-        registry.setSendBufferSizeLimit(12 * 1024 * 1024);
+        registry.setMessageSizeLimit(MEDIA_MESSAGE_LIMIT_BYTES);
+        registry.setSendBufferSizeLimit(MEDIA_MESSAGE_LIMIT_BYTES);
         registry.setSendTimeLimit(20 * 1000);
+    }
+
+    @Bean
+    public ServletServerContainerFactoryBean websocketContainer() {
+        ServletServerContainerFactoryBean container = new ServletServerContainerFactoryBean();
+        container.setMaxTextMessageBufferSize(MEDIA_MESSAGE_LIMIT_BYTES);
+        container.setMaxBinaryMessageBufferSize(MEDIA_MESSAGE_LIMIT_BYTES);
+        return container;
     }
 
     @Override
