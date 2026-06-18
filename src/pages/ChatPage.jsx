@@ -18,6 +18,7 @@ import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import PanToolIcon from '@mui/icons-material/PanTool';
 import CheckIcon from '@mui/icons-material/Check';
 import BlockIcon from '@mui/icons-material/Block';
+import ReplayIcon from '@mui/icons-material/Replay';
 import { getMyTeams, getTeamMembers } from '../services/teamService';
 import API from '../services/api';
 import ThemeToggle from '../components/ThemeToggle';
@@ -25,6 +26,8 @@ import ThemeToggle from '../components/ThemeToggle';
 const WS_URL = 'https://teamsync-app-6guk.onrender.com/ws';
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 const CALL_TIMEOUT_MS = 30000;
+const MESSAGE_ACK_TIMEOUT_MS = 12000;
+const MAX_MEDIA_BYTES = 5 * 1024 * 1024;
 
 const formatMessageTime = (sentAt) => {
   if (!sentAt) return '';
@@ -96,7 +99,16 @@ const allowedAttachmentTypes = new Set([
   'image/gif',
   'image/webp',
   'application/pdf',
+  'text/plain',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ]);
+
+const attachmentAccept = Array.from(allowedAttachmentTypes).join(',');
 
 const createClientMessageId = (userId) => `msg-${userId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -114,6 +126,8 @@ const getStatusLabel = (status) => {
       return '✓✓ Delivered';
     case 'SEEN':
       return '✓✓ Seen';
+    case 'FAILED':
+      return 'Failed';
     case 'SENT':
     default:
       return '✓ Sent';
@@ -272,6 +286,7 @@ export default function ChatPage() {
   const recordingTimerRef = useRef(null);
   const recordingSecondsRef = useRef(0);
   const fileInputRef = useRef(null);
+  const pendingMessageTimersRef = useRef({});
   const peersRef = useRef({});
   const localStreamRef = useRef(null);
   const screenStreamRef = useRef(null);
@@ -315,7 +330,31 @@ export default function ChatPage() {
     sentAt: msg.sentAt,
   }), [getDisplayName]);
 
+  const clearPendingMessageTimer = useCallback((clientMessageId) => {
+    if (!clientMessageId || !pendingMessageTimersRef.current[clientMessageId]) return;
+
+    clearTimeout(pendingMessageTimersRef.current[clientMessageId]);
+    delete pendingMessageTimersRef.current[clientMessageId];
+  }, []);
+
+  const markMessageFailed = useCallback((clientMessageId) => {
+    clearPendingMessageTimer(clientMessageId);
+    setMessages((prev) => prev.map((msg) => (
+      msg.clientMessageId === clientMessageId && msg.deliveryStatus === 'SENDING'
+        ? { ...msg, deliveryStatus: 'FAILED' }
+        : msg
+    )));
+  }, [clearPendingMessageTimer]);
+
+  const trackPendingMessage = useCallback((clientMessageId) => {
+    clearPendingMessageTimer(clientMessageId);
+    pendingMessageTimersRef.current[clientMessageId] = setTimeout(() => {
+      markMessageFailed(clientMessageId);
+    }, MESSAGE_ACK_TIMEOUT_MS);
+  }, [clearPendingMessageTimer, markMessageFailed]);
+
   const upsertMessage = useCallback((incoming) => {
+    clearPendingMessageTimer(incoming.clientMessageId);
     setMessages((prev) => {
       const existingIndex = prev.findIndex((msg) => (
         (incoming.id && msg.id === incoming.id)
@@ -332,7 +371,19 @@ export default function ChatPage() {
       };
       return next;
     });
-  }, []);
+  }, [clearPendingMessageTimer]);
+
+  const publishChatMessage = useCallback((message) => {
+    if (!clientRef.current?.connected || !selectedTeam) return false;
+
+    trackPendingMessage(message.clientMessageId);
+    clientRef.current.publish({
+      destination: `/app/chat/${selectedTeam.id}`,
+      body: JSON.stringify({ ...message, deliveryStatus: undefined }),
+    });
+
+    return true;
+  }, [selectedTeam, trackPendingMessage]);
 
   const publishMessageStatus = useCallback((message, deliveryStatus) => {
     if (!message?.id || !clientRef.current?.connected || !selectedTeam || !user || message.senderId === user.id) {
@@ -719,6 +770,8 @@ export default function ChatPage() {
     stopMediaStream(localStreamRef.current);
     stopMediaStream(screenStreamRef.current);
     clearInterval(recordingTimerRef.current);
+    Object.values(pendingMessageTimersRef.current).forEach((timer) => clearTimeout(timer));
+    pendingMessageTimersRef.current = {};
   }, [stopMediaStream]);
 
   const loadTeams = async () => {
@@ -777,8 +830,10 @@ export default function ChatPage() {
         });
         client.subscribe(`/topic/team/${teamId}/status`, (message) => {
           const statusMessage = JSON.parse(message.body);
+          if (statusMessage.clientMessageId) clearPendingMessageTimer(statusMessage.clientMessageId);
           setMessages((prev) => prev.map((msg) => (
-            msg.id === statusMessage.id
+            (statusMessage.id && msg.id === statusMessage.id)
+            || (statusMessage.clientMessageId && msg.clientMessageId === statusMessage.clientMessageId)
               ? { ...msg, deliveryStatus: statusMessage.deliveryStatus || msg.deliveryStatus }
               : msg
           )));
@@ -815,10 +870,7 @@ export default function ChatPage() {
     };
 
     upsertMessage(msg);
-    clientRef.current.publish({
-      destination: `/app/chat/${selectedTeam.id}`,
-      body: JSON.stringify({ ...msg, deliveryStatus: undefined }),
-    });
+    publishChatMessage(msg);
 
     setInput('');
   };
@@ -842,6 +894,7 @@ export default function ChatPage() {
         url,
         duration: recordingSecondsRef.current,
         mimeType: blob.type,
+        tooLarge: blob.size > MAX_MEDIA_BYTES,
       });
       stream.getTracks().forEach((track) => track.stop());
     };
@@ -881,6 +934,10 @@ export default function ChatPage() {
 
   const sendVoiceDraft = async () => {
     if (!voiceDraft || !clientRef.current?.connected) return;
+    if (voiceDraft.blob.size > MAX_MEDIA_BYTES) {
+      setVoiceDraft((draft) => draft ? { ...draft, tooLarge: true } : draft);
+      return;
+    }
 
     const audioDataUrl = await readBlobAsDataUrl(voiceDraft.blob);
     const clientMessageId = createClientMessageId(user.id);
@@ -899,10 +956,7 @@ export default function ChatPage() {
     };
 
     upsertMessage(msg);
-    clientRef.current.publish({
-      destination: `/app/chat/${selectedTeam.id}`,
-      body: JSON.stringify({ ...msg, deliveryStatus: undefined }),
-    });
+    publishChatMessage(msg);
 
     cancelVoiceDraft();
   };
@@ -911,6 +965,15 @@ export default function ChatPage() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file || !allowedAttachmentTypes.has(file.type)) return;
+    if (file.size > MAX_MEDIA_BYTES) {
+      setAttachmentDraft({
+        tooLarge: true,
+        fileName: file.name,
+        fileSize: file.size,
+        mimeType: file.type,
+      });
+      return;
+    }
 
     const dataUrl = await readBlobAsDataUrl(file);
     setAttachmentDraft({
@@ -945,11 +1008,20 @@ export default function ChatPage() {
     };
 
     upsertMessage(msg);
-    clientRef.current.publish({
-      destination: `/app/chat/${selectedTeam.id}`,
-      body: JSON.stringify({ ...msg, deliveryStatus: undefined }),
-    });
+    publishChatMessage(msg);
     setAttachmentDraft(null);
+  };
+
+  const retryMessage = (message) => {
+    if (!clientRef.current?.connected) return;
+
+    const retry = {
+      ...message,
+      deliveryStatus: 'SENDING',
+      sentAt: new Date().toISOString(),
+    };
+    upsertMessage(retry);
+    publishChatMessage(retry);
   };
 
   const startCall = async () => {
@@ -1162,6 +1234,18 @@ export default function ChatPage() {
                   <p style={{ ...styles.msgTime, color: isMe ? 'rgba(255,255,255,0.7)' : 'var(--text-muted)' }}>
                     {formatMessageTime(msg.sentAt)} {isMe && msg.messageType !== 'CALL' ? getStatusLabel(msg.deliveryStatus) : ''}
                   </p>
+                  {isMe && msg.deliveryStatus === 'FAILED' && (
+                    <button
+                      type="button"
+                      title="Retry message"
+                      style={styles.retryBtn}
+                      onClick={() => retryMessage(msg)}
+                      disabled={!connected}
+                    >
+                      <ReplayIcon fontSize="inherit" />
+                      Retry
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -1173,30 +1257,40 @@ export default function ChatPage() {
           <div style={styles.voicePreview}>
             <audio src={voiceDraft.url} controls style={styles.previewAudio} />
             <span style={styles.previewMeta}>{formatDuration(voiceDraft.duration)}</span>
+            {voiceDraft.tooLarge && (
+              <span style={styles.previewError}>Max {formatFileSize(MAX_MEDIA_BYTES)}</span>
+            )}
             <button type="button" title="Cancel voice message" style={styles.iconButton} onClick={cancelVoiceDraft}>
               <CloseIcon fontSize="small" />
             </button>
-            <button type="button" title="Send voice message" style={styles.sendIconButton} onClick={sendVoiceDraft}>
-              <SendIcon fontSize="small" />
-            </button>
+            {!voiceDraft.tooLarge && (
+              <button type="button" title="Send voice message" style={styles.sendIconButton} onClick={sendVoiceDraft}>
+                <SendIcon fontSize="small" />
+              </button>
+            )}
           </div>
         )}
 
         {attachmentDraft && (
           <div style={styles.voicePreview}>
-            {attachmentDraft.mimeType.startsWith('image/') ? (
+            {attachmentDraft.dataUrl && attachmentDraft.mimeType.startsWith('image/') ? (
               <img src={attachmentDraft.dataUrl} alt={attachmentDraft.fileName} style={styles.attachmentPreviewImage} />
             ) : (
               <InsertDriveFileIcon fontSize="small" />
             )}
             <span style={styles.previewMeta}>{attachmentDraft.fileName}</span>
             <span style={styles.previewMeta}>{formatFileSize(attachmentDraft.fileSize)}</span>
+            {attachmentDraft.tooLarge && (
+              <span style={styles.previewError}>Max {formatFileSize(MAX_MEDIA_BYTES)}</span>
+            )}
             <button type="button" title="Cancel attachment" style={styles.iconButton} onClick={cancelAttachmentDraft}>
               <CloseIcon fontSize="small" />
             </button>
-            <button type="button" title="Send attachment" style={styles.sendIconButton} onClick={sendAttachmentDraft}>
-              <SendIcon fontSize="small" />
-            </button>
+            {!attachmentDraft.tooLarge && (
+              <button type="button" title="Send attachment" style={styles.sendIconButton} onClick={sendAttachmentDraft}>
+                <SendIcon fontSize="small" />
+              </button>
+            )}
           </div>
         )}
 
@@ -1204,13 +1298,13 @@ export default function ChatPage() {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/jpeg,image/png,image/gif,image/webp,application/pdf"
+            accept={attachmentAccept}
             style={styles.hiddenInput}
             onChange={handleAttachmentSelect}
           />
           <button
             type="button"
-            title="Attach image or PDF"
+            title="Attach file"
             style={styles.recordBtn}
             onClick={() => fileInputRef.current?.click()}
             disabled={!connected}
@@ -1339,6 +1433,7 @@ const styles = {
   callBadgeContent: { display: 'flex', flexDirection: 'column', gap: '4px' },
   callDuration: { margin: 0, fontSize: '12px', opacity: 0.8 },
   msgTime: { margin: '4px 0 0 0', fontSize: '10px', textAlign: 'right' },
+  retryBtn: { marginTop: '8px', marginLeft: 'auto', padding: '6px 9px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.24)', background: 'rgba(255,255,255,0.16)', color: 'white', display: 'flex', alignItems: 'center', gap: '5px', cursor: 'pointer', fontSize: '11px', fontWeight: 800 },
   attachmentLink: { display: 'flex', flexDirection: 'column', gap: '6px', color: 'inherit', textDecoration: 'none' },
   attachmentImage: { maxWidth: '260px', maxHeight: '220px', borderRadius: '12px', objectFit: 'cover', display: 'block' },
   attachmentName: { fontSize: '12px', fontWeight: 700, overflowWrap: 'anywhere' },
@@ -1355,6 +1450,7 @@ const styles = {
   previewAudio: { height: '36px', flex: 1, minWidth: '160px' },
   attachmentPreviewImage: { width: '52px', height: '52px', borderRadius: '10px', objectFit: 'cover' },
   previewMeta: { color: 'var(--text-secondary)', fontWeight: 700 },
+  previewError: { color: 'var(--error)', fontWeight: 800, fontSize: '12px' },
   sendIconButton: { width: '34px', height: '34px', borderRadius: '12px', border: '1px solid var(--border-color)', background: 'linear-gradient(135deg, var(--primary-accent), var(--secondary-accent))', color: 'white', display: 'grid', placeItems: 'center', cursor: 'pointer', flex: '0 0 auto' },
   inputArea: { padding: '16px 24px', background: 'var(--glass-bg)', backdropFilter: 'blur(22px)', WebkitBackdropFilter: 'blur(22px)', border: '1px solid var(--border-color)', borderRadius: '0 0 22px 22px', display: 'flex', alignItems: 'center', gap: '12px', boxShadow: 'var(--shadow-soft)' },
   hiddenInput: { display: 'none' },
